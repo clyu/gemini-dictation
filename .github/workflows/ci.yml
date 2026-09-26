@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --locked
+
+  lint:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact-name }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # build.rs embeds GITHUB_RUN_NUMBER in the version that `gemini-dictation --version` prints.
+      - run: cargo build --release --locked
+
+      # A tarball, as the zip file of a workflow artifact would lose the executable permission.
+      - name: Package the binary
+        id: package
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "gemini-dictation") | .version')
+          if [ -z "$version" ]; then
+            echo "::error::the package version was not found in Cargo.toml"
+            exit 1
+          fi
+          name="gemini-dictation-$version-$GITHUB_RUN_NUMBER-$(uname -m)-linux"
+          mkdir -p "dist/$name"
+          cp target/release/gemini-dictation README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          "dist/$name/gemini-dictation" --version
+          echo "artifact-name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.artifact-name }}
+          path: dist/${{ steps.package.outputs.artifact-name }}.tar.gz
+          if-no-files-found: error
+
+  # Puts the binary on the Releases page as the "Latest Build" pre-release, so that it can be
+  # downloaded without signing in, which workflow artifacts require.
+  publish-latest:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: [build, test]
+    runs-on: ubuntu-latest
+
+    # Every run deletes the Latest Build releases other than its own, so two runs at once would
+    # delete each other's and leave none. Queue them instead.
+    concurrency:
+      group: publish-latest
+      cancel-in-progress: false
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the binary
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist
+
+      # Every build gets a release under a tag of its own instead of refreshing a fixed tag, which
+      # keeps working if immutable releases are enabled: a published release then cannot have its
+      # assets replaced, and a deleted release's tag name can never be used again. Without
+      # --target the tag would go on the head of the default branch, which need not be this commit.
+      - name: Publish the Latest Build pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ci-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease --title "Latest Build" \
+            --notes "Built from $GITHUB_SHA by [run $GITHUB_RUN_NUMBER]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+
+      # Only once the new release is up, so that there is always one to download. Deleting a
+      # release leaves its tag behind, hence --cleanup-tag.
+      - name: Delete the Latest Build releases of earlier runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ci-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          old_tags="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,name,isPrerelease \
+            | jq -r --arg tag "$TAG" \
+              '.[] | select(.name == "Latest Build" and .isPrerelease and .tagName != $tag) | .tagName')"
+          for old in $old_tags; do
+            gh release delete "$old" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
+          done
