@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Gemini Dictation
+Name[zh_TW]=Gemini 語音輸入
+GenericName=Voice Dictation
+GenericName[zh_TW]=語音輸入
+Comment=Push-to-talk dictation, transcribed by the Gemini Live API
+Comment[zh_TW]=按住按鍵說話，由 Gemini Live API 轉成文字輸入
+Exec=gemini-dictation
+Icon=audio-input-microphone
+Terminal=false
+StartupNotify=false
+Categories=Utility;Accessibility;
+Keywords=voice;speech;dictation;transcription;microphone;push-to-talk;
+Keywords[zh_TW]=語音;聽寫;輸入;轉錄;麥克風;
+Actions=quit;
+
+[Desktop Action quit]
+Name=Quit
+Name[zh_TW]=結束
+Exec=gemini-dictation ctl quit

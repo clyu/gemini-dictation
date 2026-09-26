@@ -84,7 +84,7 @@ jobs:
           fi
           name="gemini-dictation-$version-$GITHUB_RUN_NUMBER-$(uname -m)-linux"
           mkdir -p "dist/$name"
-          cp target/release/gemini-dictation README.md "dist/$name/"
+          cp target/release/gemini-dictation gemini-dictation.desktop README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           "dist/$name/gemini-dictation" --version
           echo "artifact-name=$name" >> "$GITHUB_OUTPUT"

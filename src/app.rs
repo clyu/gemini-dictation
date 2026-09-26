@@ -1,10 +1,14 @@
 //! Ties the push-to-talk key, the microphone, the transcription sessions and the output together.
 
+use std::env;
+use std::fs;
+use std::io;
 use std::mem;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -19,10 +23,7 @@ use crate::output::{self, Emitter, Update};
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let languages = args.language_codes();
-    let api_key = args
-        .api_key
-        .filter(|key| !key.is_empty())
-        .context("no Gemini API key: set GEMINI_API_KEY or pass --api-key")?;
+    let api_key = api_key(args.api_key)?;
     let key = hotkey::parse_key(&args.key)?;
     let config = SessionConfig {
         api_key,
@@ -84,6 +85,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
                 CtlAction::Toggle if app.recording.is_some() => app.stop(),
                 CtlAction::Toggle => app.start(true).await,
                 CtlAction::Cancel => app.cancel(),
+                CtlAction::Quit => break,
             },
             () = sleep_until(connect_at.unwrap_or_else(far_future)), if connect_at.is_some() => {
                 app.connect();
@@ -97,6 +99,36 @@ pub async fn run(args: RunArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Returns the API key given on the command line or in the environment, or else the one saved in
+/// the configuration directory, as desktop launchers do not see the variables set by shells.
+fn api_key(given: Option<String>) -> Result<String> {
+    if let Some(key) = given.filter(|key| !key.is_empty()) {
+        return Ok(key);
+    }
+    let path = api_key_path();
+    let key = match fs::read_to_string(&path) {
+        Ok(key) => key.trim().to_owned(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
+    };
+    if key.is_empty() {
+        bail!(
+            "no Gemini API key: set GEMINI_API_KEY, pass --api-key, or save it in {}",
+            path.display()
+        );
+    }
+    Ok(key)
+}
+
+fn api_key_path() -> PathBuf {
+    let config = env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_default();
+    config.join("gemini-dictation").join("api-key")
 }
 
 fn far_future() -> Instant {

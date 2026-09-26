@@ -43,6 +43,8 @@ pub enum CtlAction {
     Toggle,
     /// Stop recording and discard it.
     Cancel,
+    /// Exit the running instance.
+    Quit,
 }
 
 impl CtlAction {
@@ -52,6 +54,7 @@ impl CtlAction {
             CtlAction::Stop => "stop",
             CtlAction::Toggle => "toggle",
             CtlAction::Cancel => "cancel",
+            CtlAction::Quit => "quit",
         }
     }
 
@@ -62,7 +65,7 @@ impl CtlAction {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Gemini API key.
+    /// Gemini API key; read from ~/.config/gemini-dictation/api-key if not given.
     #[arg(long, env = "GEMINI_API_KEY", hide_env_values = true)]
     pub api_key: Option<String>,
 

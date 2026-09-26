@@ -87,6 +87,8 @@ pub async fn send(action: CtlAction) -> Result<()> {
     BufReader::new(reader).read_line(&mut reply).await?;
     match reply.trim() {
         "ok" => Ok(()),
+        // The instance may exit before its reply is written.
+        "" if action == CtlAction::Quit => Ok(()),
         "" => bail!("gemini-dictation closed the connection"),
         reply => bail!("gemini-dictation replied: {reply}"),
     }

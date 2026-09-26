@@ -16,11 +16,19 @@ Push-to-talk dictation for Linux Wayland desktops. Hold a key, speak, and releas
   - `clipboard`: only copies the text
   - `stdout`: prints the text
   - `auto` (default): `type` if wtype is installed and the desktop is neither GNOME nor KDE, `paste` otherwise
-- `gemini-dictation ctl start|stop|toggle|cancel` controls the running instance, for compositor key bindings
+- `gemini-dictation ctl start|stop|toggle|cancel|quit` controls the running instance, for compositor key bindings
+- A desktop entry, to start it in the background from the application menu
 
 ## Installation
 
-Download the `gemini-dictation-<version>-<build>-x86_64-linux.tar.gz` archive of the latest build from the [Latest Build](../../releases) pre-release (or from the artifacts of a workflow run), and put the `gemini-dictation` binary somewhere on your `PATH`.
+Download the `gemini-dictation-<version>-<build>-x86_64-linux.tar.gz` archive of the latest build from the [Latest Build](../../releases) pre-release (or from the artifacts of a workflow run), and install the binary and the desktop entry from it:
+
+```
+install -Dm755 gemini-dictation ~/.local/bin/gemini-dictation
+install -Dm644 gemini-dictation.desktop ~/.local/share/applications/gemini-dictation.desktop
+```
+
+`~/.local/bin` needs to be on the `PATH` of the desktop session, as it is on Debian and Ubuntu once it exists and you log in again; otherwise, install the binary elsewhere on the `PATH`, or put its full path in the `Exec` lines of the desktop entry.
 
 Runtime requirements:
 
@@ -48,16 +56,22 @@ Log in again for the group membership to take effect. Note that any program runn
 
 ## Usage
 
+Save your [Gemini API key](https://aistudio.google.com/apikey) in `~/.config/gemini-dictation/api-key`, which only you should be able to read:
+
 ```
-export GEMINI_API_KEY=...
-gemini-dictation
+install -Dm600 /dev/null ~/.config/gemini-dictation/api-key
+nano ~/.config/gemini-dictation/api-key
 ```
 
-Hold Right Ctrl, speak, and release it. Pressing another key while holding it cancels the recording.
+(`--api-key` or the `GEMINI_API_KEY` environment variable take precedence over the file.)
+
+Then start **Gemini Dictation** from the application menu, which runs it in the background without a window, or run `gemini-dictation` in a terminal to see its log. Hold Right Ctrl, speak, and release it. Pressing another key while holding it cancels the recording.
+
+To stop it, choose **Quit** in the menu of its icon (right-click it in the application menu), or run `gemini-dictation ctl quit`. Starting it again while it runs has no effect. To start it whenever you log in, copy the desktop entry to `~/.config/autostart/`.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--api-key` | `$GEMINI_API_KEY` | Gemini API key |
+| `--api-key` | `$GEMINI_API_KEY` | Gemini API key, instead of the one in `~/.config/gemini-dictation/api-key` |
 | `--model` | `gemini-3.8-live` | Live API model (also `$GEMINI_DICTATION_MODEL`) |
 | `--key` | `KEY_RIGHTCTRL` | Push-to-talk key; `gemini-dictation keys` prints the names of the keys pressed |
 | `--language` | `zh-Hant,en` | Language hints, comma-separated or repeated; `auto` for automatic detection. Without a hint, Mandarin is transcribed in Simplified Chinese |
@@ -89,12 +103,12 @@ bindr = SUPER, space, exec, gemini-dictation ctl stop
 
 `gemini-dictation ctl toggle` suits desktops whose shortcuts cannot react to key releases, such as GNOME.
 
-To start gemini-dictation with the session, run it from the compositor's autostart (such as `exec gemini-dictation` in Sway), or as a systemd user service with the API key in an environment file.
+On compositors that do not start desktop entries from `~/.config/autostart/`, start gemini-dictation from the compositor's configuration instead, such as `exec gemini-dictation` in Sway.
 
 ## Notes
 
 - The model's own spoken reply is not used; the system instruction asks it to stay silent.
-- Transcripts are logged on standard error.
+- Transcripts are logged on standard error. When started from the application menu, the log usually ends up in the systemd journal (`journalctl --user -f`).
 - Line breaks in transcripts, which smart transcription may add for paragraphs and lists, are replaced with spaces (or removed next to Chinese and Japanese), so that dictation never presses Enter and, for example, sends a message or runs a command.
 - The `paste` output replaces the contents of both the clipboard and the primary selection. Shift+Insert pastes the clipboard in most applications, but the primary selection in terminals such as GNOME Terminal, in which Ctrl+V does not paste at all.
 - Consecutive transcripts are separated by a space when both sides are Latin letters, digits or punctuation, as they are dictated without knowing the text around the cursor.
