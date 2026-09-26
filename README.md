@@ -95,7 +95,7 @@ To start gemini-dictation with the session, run it from the compositor's autosta
 
 - The model's own spoken reply is not used; the system instruction asks it to stay silent.
 - Transcripts are logged on standard error.
-- The `type` output types line breaks as Shift+Enter, which starts a new line rather than sending the message in chat applications.
+- Line breaks in transcripts, which smart transcription may add for paragraphs and lists, are replaced with spaces (or removed next to Chinese and Japanese), so that dictation never presses Enter and, for example, sends a message or runs a command.
 - The `paste` output replaces the contents of both the clipboard and the primary selection. Shift+Insert pastes the clipboard in most applications, but the primary selection in terminals such as GNOME Terminal, in which Ctrl+V does not paste at all.
 - Consecutive transcripts are separated by a space when both sides are Latin letters, digits or punctuation, as they are dictated without knowing the text around the cursor.
 

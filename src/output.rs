@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Write};
 use std::mem;
+use std::ops::RangeInclusive;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -43,7 +44,7 @@ struct Transcript {
     ended: bool,
 }
 
-/// Orders the pieces of the transcripts, and separates consecutive transcripts.
+/// Orders the pieces of the transcripts, joins their lines, and separates consecutive transcripts.
 pub struct Queue {
     transcripts: VecDeque<Transcript>,
     /// Deliver only complete transcripts, rather than each piece as soon as possible.
@@ -92,17 +93,22 @@ impl Queue {
         while let Some(transcript) = self.transcripts.front_mut() {
             if transcript.ended || !self.whole {
                 let pending = mem::take(&mut transcript.pending);
-                let mut text = pending.as_str();
-                if !transcript.started {
-                    text = text.trim_start();
-                    if needs_space(self.last_char, text) {
-                        ready.push(' ');
-                    }
+                let (text, last) = if transcript.started {
+                    (pending.as_str(), self.last_char)
+                } else {
+                    (pending.trim_start(), None)
+                };
+                let (text, line_break) = join_lines(text, last);
+                if !transcript.ended {
+                    transcript.pending = line_break.to_owned();
+                }
+                if !transcript.started && needs_space(self.last_char, &text) {
+                    ready.push(' ');
                 }
                 if let Some(last) = text.chars().next_back() {
                     transcript.started = true;
                     self.last_char = Some(last);
-                    ready.push_str(text);
+                    ready.push_str(&text);
                 }
             }
             if !transcript.ended {
@@ -122,6 +128,51 @@ fn needs_space(last: Option<char>, text: &str) -> bool {
     };
     let ends_word = last.is_ascii_alphanumeric() || ".,!?:;)".contains(last);
     ends_word && first.is_ascii_alphanumeric()
+}
+
+/// Replaces each line break in `text`, together with the whitespace around it, with a space, or
+/// with nothing next to Chinese or Japanese, so that a transcript never presses Enter. `last` is
+/// the character before `text`.
+///
+/// Returns the joined text, and the line break at the end of `text` if there is one, which can
+/// only be replaced once the text that follows it is known.
+fn join_lines(text: &str, mut last: Option<char>) -> (String, &str) {
+    let mut joined = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find(is_line_break) {
+        let before = rest[..index].trim_end();
+        let after = rest[index..].trim_start();
+        joined.push_str(before);
+        last = before.chars().next_back().or(last);
+        let Some(next) = after.chars().next() else {
+            return (joined, &rest[before.len()..]);
+        };
+        if last.is_some_and(|c| !c.is_whitespace() && !is_cjk(c) && !is_cjk(next)) {
+            joined.push(' ');
+        }
+        rest = after;
+    }
+    joined.push_str(rest);
+    (joined, "")
+}
+
+fn is_line_break(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Chinese and Japanese characters and punctuation, which are written without spaces.
+const CJK: [RangeInclusive<char>; 7] = [
+    '\u{2e80}'..='\u{303f}',
+    '\u{3040}'..='\u{31ff}',
+    '\u{3400}'..='\u{4dbf}',
+    '\u{4e00}'..='\u{9fff}',
+    '\u{f900}'..='\u{faff}',
+    '\u{ff00}'..='\u{ffef}',
+    '\u{20000}'..='\u{3ffff}',
+];
+
+fn is_cjk(c: char) -> bool {
+    CJK.iter().any(|range| range.contains(&c))
 }
 
 pub enum Emitter {
@@ -195,7 +246,7 @@ impl Emitter {
 
     pub async fn emit(&mut self, text: &str) -> Result<()> {
         match self {
-            Self::Type => type_text(text).await,
+            Self::Type => run("wtype", &["--", text]).await,
             Self::Paste { keyboard, keys } => {
                 copy(text, Selection::Clipboard).await?;
                 // Terminals such as GNOME Terminal paste the primary selection on Shift+Insert.
@@ -248,20 +299,6 @@ fn virtual_keyboard() -> Result<VirtualDevice> {
         "cannot create a virtual keyboard: /dev/uinput needs to be writable (see the README), \
          or choose another --output",
     )
-}
-
-/// Types `text` with wtype. Line breaks are typed as Shift+Enter, which starts a new line rather
-/// than sending the message in chat applications.
-async fn type_text(text: &str) -> Result<()> {
-    for (index, line) in text.split('\n').enumerate() {
-        if index > 0 {
-            run("wtype", &["-M", "shift", "-k", "Return", "-m", "shift"]).await?;
-        }
-        if !line.is_empty() {
-            run("wtype", &["--", line]).await?;
-        }
-    }
-    Ok(())
 }
 
 async fn run(program: &str, args: &[&str]) -> Result<()> {
@@ -412,6 +449,29 @@ mod tests {
         assert_eq!(feed(&mut queue, [Begin(1), text(1, "Hi."), End(1)]), "Hi.");
         assert_eq!(feed(&mut queue, [Begin(2), text(2, " "), End(2)]), "");
         assert_eq!(feed(&mut queue, [Begin(3), text(3, " OK")]), " OK");
+    }
+
+    #[test]
+    fn line_breaks_become_spaces() {
+        let mut queue = Queue::new(false);
+        let updates = [Begin(1), text(1, "One.\nTwo \r\n\n three"), End(1)];
+        assert_eq!(feed(&mut queue, updates), "One. Two three");
+    }
+
+    #[test]
+    fn line_breaks_next_to_chinese_disappear() {
+        let mut queue = Queue::new(false);
+        let updates = [Begin(1), text(1, "第一。\n\n第二\nA"), End(1)];
+        assert_eq!(feed(&mut queue, updates), "第一。第二A");
+    }
+
+    #[test]
+    fn line_breaks_wait_for_the_next_piece() {
+        let mut queue = Queue::new(false);
+        assert_eq!(feed(&mut queue, [Begin(1), text(1, "\nOne.\n")]), "One.");
+        assert_eq!(feed(&mut queue, [text(1, " Two\n")]), " Two");
+        assert_eq!(feed(&mut queue, [End(1)]), "");
+        assert_eq!(feed(&mut queue, [Begin(2), text(2, "Three")]), " Three");
     }
 
     #[test]
