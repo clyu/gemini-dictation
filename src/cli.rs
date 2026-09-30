@@ -92,7 +92,8 @@ pub struct RunArgs {
     )]
     pub languages: Vec<String>,
 
-    /// Phrase that recognition should favor, such as a product name; can be repeated.
+    /// Phrase that recognition should favor, such as a product name, in addition to those in
+    /// ~/.config/gemini-dictation/vocabulary; can be repeated.
     #[arg(long = "vocabulary", value_name = "PHRASE")]
     pub vocabulary: Vec<String>,
 

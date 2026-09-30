@@ -7,7 +7,7 @@ Push-to-talk dictation for Linux Wayland desktops. Hold a key, speak, and releas
 - Push-to-talk on any key or mouse button (Right Ctrl by default), read from the evdev devices so that it works under every Wayland compositor
 - Transcription by the Live API's input audio transcription (`inputAudioTranscription`), with the model defaulting to `gemini-3.5-transcribe-live`
   - Smart mode (default) removes filler words and false starts and tidies up punctuation; verbatim mode transcribes exactly what was said
-  - Language hints (Traditional Chinese and English by default) and custom vocabulary
+  - Language hints (Traditional Chinese and English by default) and custom vocabulary, read from a file of phrases
 - One Live API session per recording, framed with `activityStart` / `activityEnd` as automatic voice activity detection is disabled. The connection is only opened once the key has been held for 250 ms, so that taps of the key (and shortcuts such as Ctrl+C when the key is Right Ctrl) never reach Gemini; audio recorded in the meantime is buffered
 - The transcript is typed as it arrives, but only once the push-to-talk key and all modifier keys are released, so that it cannot trigger shortcuts
 - Output methods:
@@ -65,6 +65,17 @@ nano ~/.config/gemini-dictation/api-key
 
 (`--api-key` or the `GEMINI_API_KEY` environment variable take precedence over the file.)
 
+To help Gemini recognize names, products and jargon, list them in `~/.config/gemini-dictation/vocabulary`, one phrase per line; blank lines and lines starting with `#` are ignored. For example:
+
+```
+# Names
+Wayland
+Hyprland
+gemini-dictation
+```
+
+The file is read at startup, so restart gemini-dictation after editing it. `--vocabulary` adds more phrases.
+
 Then start **Gemini Dictation** from the application menu, which runs it in the background without a window, or run `gemini-dictation` in a terminal to see its log. Hold Right Ctrl, speak, and release it. Pressing another key while holding it cancels the recording.
 
 To stop it, choose **Quit** in the menu of its icon (right-click it in the application menu), or run `gemini-dictation ctl quit`. Starting it again while it runs has no effect. To start it whenever you log in, copy the desktop entry to `~/.config/autostart/`.
@@ -75,7 +86,7 @@ To stop it, choose **Quit** in the menu of its icon (right-click it in the appli
 | `--model` | `gemini-3.5-transcribe-live` | Live API transcription model (also `$GEMINI_DICTATION_MODEL`) |
 | `--key` | `KEY_RIGHTCTRL` | Push-to-talk key; `gemini-dictation keys` prints the names of the keys pressed |
 | `--language` | `zh-Hant,en` | Language hints, comma-separated or repeated; `auto` for automatic detection. Without a hint, Mandarin is transcribed in Simplified Chinese |
-| `--vocabulary` | | Phrase to favor, such as a name or a product; can be repeated |
+| `--vocabulary` | | Phrase to favor, such as a name or a product, in addition to those in `~/.config/gemini-dictation/vocabulary`; can be repeated |
 | `--transcription-mode` | `smart` | `smart` or `verbatim` |
 | `--output` | `auto` | `auto`, `type`, `paste`, `clipboard` or `stdout` |
 | `--paste-keys` | `shift+insert` | Keys pressed by the `paste` output, such as `ctrl+v` |

@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,15 +24,20 @@ use crate::output::{self, Emitter, Update};
 pub async fn run(args: RunArgs) -> Result<()> {
     let languages = args.language_codes();
     let api_key = api_key(args.api_key)?;
+    let vocabulary = vocabulary(args.vocabulary)?;
     let key = hotkey::parse_key(&args.key)?;
     let config = SessionConfig {
         api_key,
         languages,
         model: args.model,
-        vocabulary: args.vocabulary,
+        vocabulary,
         mode: args.transcription_mode.api_name(),
     };
     tracing::info!("transcribing with {}", config.model);
+    if !config.vocabulary.is_empty() {
+        tracing::info!("favoring {} vocabulary phrases", config.vocabulary.len());
+        tracing::debug!("vocabulary: {:?}", config.vocabulary);
+    }
     let (actions, mut ctl) = mpsc::unbounded_channel();
     let _server = ipc::serve(actions).await?;
 
@@ -107,12 +112,8 @@ fn api_key(given: Option<String>) -> Result<String> {
     if let Some(key) = given.filter(|key| !key.is_empty()) {
         return Ok(key);
     }
-    let path = api_key_path();
-    let key = match fs::read_to_string(&path) {
-        Ok(key) => key.trim().to_owned(),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
-    };
+    let path = config_path("api-key");
+    let key = read_config(&path)?.trim().to_owned();
     if key.is_empty() {
         bail!(
             "no Gemini API key: set GEMINI_API_KEY, pass --api-key, or save it in {}",
@@ -122,13 +123,47 @@ fn api_key(given: Option<String>) -> Result<String> {
     Ok(key)
 }
 
-fn api_key_path() -> PathBuf {
+/// Returns the phrases saved in the vocabulary file of the configuration directory, followed by
+/// those given on the command line.
+fn vocabulary(given: Vec<String>) -> Result<Vec<String>> {
+    let saved = read_config(&config_path("vocabulary"))?;
+    Ok(parse_vocabulary(&saved, given))
+}
+
+/// Returns the phrases of a vocabulary file, one per line, followed by the phrases `given`, without
+/// blank lines, `#` comments and duplicates.
+fn parse_vocabulary(saved: &str, given: Vec<String>) -> Vec<String> {
+    let lines = saved
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(str::to_owned);
+    let mut phrases: Vec<String> = Vec::new();
+    for phrase in lines.chain(given) {
+        let phrase = phrase.trim().to_owned();
+        if !phrase.is_empty() && !phrases.contains(&phrase) {
+            phrases.push(phrase);
+        }
+    }
+    phrases
+}
+
+/// Returns the contents of a file in the configuration directory, or nothing if it does not exist.
+fn read_config(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(err).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
+/// Returns the path of a file in the configuration directory, ~/.config/gemini-dictation.
+fn config_path(name: &str) -> PathBuf {
     let config = env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_default();
-    config.join("gemini-dictation").join("api-key")
+    config.join("gemini-dictation").join(name)
 }
 
 fn far_future() -> Instant {
@@ -244,5 +279,21 @@ impl App {
             let _ = self.updates.send(Update::Discard(recording.id));
             tracing::info!("recording cancelled");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vocabulary_file() {
+        let saved = "Gemini\n\n  # Desktops\n  Wayland  \r\nGemini\n";
+        let given = vec!["Sway".to_owned(), "Wayland".to_owned(), " ".to_owned()];
+        assert_eq!(
+            parse_vocabulary(saved, given),
+            ["Gemini", "Wayland", "Sway"]
+        );
+        assert!(parse_vocabulary("", vec![]).is_empty());
     }
 }
