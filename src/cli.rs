@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-pub const DEFAULT_MODEL: &str = "gemini-3.8-live";
+pub const DEFAULT_MODEL: &str = "gemini-3.5-transcribe-live";
 
 /// Push-to-talk dictation for Wayland, transcribed by the Gemini Live API.
 ///
@@ -69,7 +69,7 @@ pub struct RunArgs {
     #[arg(long, env = "GEMINI_API_KEY", hide_env_values = true)]
     pub api_key: Option<String>,
 
-    /// Gemini Live API model.
+    /// Gemini Live API transcription model.
     #[arg(long, env = "GEMINI_DICTATION_MODEL", default_value = DEFAULT_MODEL)]
     pub model: String,
 

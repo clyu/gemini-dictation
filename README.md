@@ -5,7 +5,7 @@ Push-to-talk dictation for Linux Wayland desktops. Hold a key, speak, and releas
 ## Features
 
 - Push-to-talk on any key or mouse button (Right Ctrl by default), read from the evdev devices so that it works under every Wayland compositor
-- Transcription by the Live API's input audio transcription (`inputAudioTranscription`), with the model defaulting to `gemini-3.8-live`
+- Transcription by the Live API's input audio transcription (`inputAudioTranscription`), with the model defaulting to `gemini-3.5-transcribe-live`
   - Smart mode (default) removes filler words and false starts and tidies up punctuation; verbatim mode transcribes exactly what was said
   - Language hints (Traditional Chinese and English by default) and custom vocabulary
 - One Live API session per recording, framed with `activityStart` / `activityEnd` as automatic voice activity detection is disabled. The connection is only opened once the key has been held for 250 ms, so that taps of the key (and shortcuts such as Ctrl+C when the key is Right Ctrl) never reach Gemini; audio recorded in the meantime is buffered
@@ -72,7 +72,7 @@ To stop it, choose **Quit** in the menu of its icon (right-click it in the appli
 | Option | Default | Description |
 | --- | --- | --- |
 | `--api-key` | `$GEMINI_API_KEY` | Gemini API key, instead of the one in `~/.config/gemini-dictation/api-key` |
-| `--model` | `gemini-3.8-live` | Live API model (also `$GEMINI_DICTATION_MODEL`) |
+| `--model` | `gemini-3.5-transcribe-live` | Live API transcription model (also `$GEMINI_DICTATION_MODEL`) |
 | `--key` | `KEY_RIGHTCTRL` | Push-to-talk key; `gemini-dictation keys` prints the names of the keys pressed |
 | `--language` | `zh-Hant,en` | Language hints, comma-separated or repeated; `auto` for automatic detection. Without a hint, Mandarin is transcribed in Simplified Chinese |
 | `--vocabulary` | | Phrase to favor, such as a name or a product; can be repeated |
@@ -107,7 +107,6 @@ On compositors that do not start desktop entries from `~/.config/autostart/`, st
 
 ## Notes
 
-- The model's own spoken reply is not used; the system instruction asks it to stay silent.
 - Transcripts are logged on standard error. When started from the application menu, the log usually ends up in the systemd journal (`journalctl --user -f`).
 - Line breaks in transcripts, which smart transcription may add for paragraphs and lists, are replaced with spaces (or removed next to Chinese and Japanese), so that dictation never presses Enter and, for example, sends a message or runs a command.
 - The `paste` output replaces the contents of both the clipboard and the primary selection. Shift+Insert pastes the clipboard in most applications, but the primary selection in terminals such as GNOME Terminal, in which Ctrl+V does not paste at all.

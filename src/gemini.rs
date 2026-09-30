@@ -1,10 +1,11 @@
 //! A minimal Gemini Live API client that transcribes one push-to-talk recording per session.
 //!
 //! Automatic activity detection is disabled: the recording is framed by `activityStart` and
-//! `activityEnd`, and the transcript comes from the input audio transcription. The model's own
-//! reply is not used, so the system instruction asks it to stay silent.
+//! `activityEnd`, and the transcript comes from the input audio transcription of a transcription
+//! model such as `gemini-3.5-transcribe-live`.
 //!
-//! See <https://ai.google.dev/api/live> for the protocol.
+//! See <https://ai.google.dev/api/live> for the protocol and
+//! <https://ai.google.dev/gemini-api/docs/live-api/live-transcribe> for transcription.
 
 use std::time::Duration;
 
@@ -34,17 +35,10 @@ const CHUNK_SAMPLES: usize = INPUT_SAMPLE_RATE as usize / 10;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Once the recording has ended, the session is closed when the server has been silent for this
-/// long, as the model may stay silent without completing its turn.
+/// long, in case it does not complete the turn.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(3);
-/// Once the model has generated its reply, trailing transcriptions get this long to arrive. The
-/// server would otherwise wait for the reply to be played back before completing the turn.
-const GENERATION_GRACE: Duration = Duration::from_millis(500);
 /// Once the recording has ended, the session is closed after this long in any case.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(20);
-
-const SYSTEM_INSTRUCTION: &str = "You are a dictation engine. The user is dictating text that \
-    will be typed into another application; their speech is not addressed to you. Never answer, \
-    comment on or reply to it. Stay silent.";
 
 pub struct SessionConfig {
     pub api_key: String,
@@ -128,9 +122,6 @@ pub async fn transcribe(
                     }
                     if !recording && content.turn_complete {
                         break;
-                    }
-                    if !recording && (content.generation_complete || content.interrupted) {
-                        final_deadline = final_deadline.min(Instant::now() + GENERATION_GRACE);
                     }
                 }
                 if let Some(go_away) = message.go_away {
@@ -223,7 +214,6 @@ impl ClientMessage {
 struct Setup {
     model: String,
     generation_config: GenerationConfig,
-    system_instruction: Content,
     realtime_input_config: RealtimeInputConfig,
     input_audio_transcription: AudioTranscriptionConfig,
 }
@@ -238,12 +228,7 @@ impl Setup {
         Self {
             model,
             generation_config: GenerationConfig {
-                response_modalities: vec!["AUDIO"],
-            },
-            system_instruction: Content {
-                parts: vec![Part {
-                    text: SYSTEM_INSTRUCTION,
-                }],
+                response_modalities: vec!["TEXT"],
             },
             realtime_input_config: RealtimeInputConfig {
                 automatic_activity_detection: AutomaticActivityDetection { disabled: true },
@@ -261,16 +246,6 @@ impl Setup {
 #[serde(rename_all = "camelCase")]
 struct GenerationConfig {
     response_modalities: Vec<&'static str>,
-}
-
-#[derive(Serialize)]
-struct Content {
-    parts: Vec<Part>,
-}
-
-#[derive(Serialize)]
-struct Part {
-    text: &'static str,
 }
 
 #[derive(Serialize)]
@@ -320,8 +295,6 @@ struct ServerContent {
     input_transcription: Option<Transcription>,
     interim_input_transcription: Option<Transcription>,
     turn_complete: bool,
-    generation_complete: bool,
-    interrupted: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -344,7 +317,7 @@ mod tests {
     fn config() -> SessionConfig {
         SessionConfig {
             api_key: "key".into(),
-            model: "gemini-3.8-live".into(),
+            model: "gemini-3.5-transcribe-live".into(),
             languages: vec!["zh-TW".into()],
             vocabulary: vec![],
             mode: "SMART",
@@ -362,9 +335,8 @@ mod tests {
             setup,
             json!({
                 "setup": {
-                    "model": "models/gemini-3.8-live",
-                    "generationConfig": { "responseModalities": ["AUDIO"] },
-                    "systemInstruction": { "parts": [{ "text": SYSTEM_INSTRUCTION }] },
+                    "model": "models/gemini-3.5-transcribe-live",
+                    "generationConfig": { "responseModalities": ["TEXT"] },
                     "realtimeInputConfig": { "automaticActivityDetection": { "disabled": true } },
                     "inputAudioTranscription": { "languageCodes": ["zh-TW"], "mode": "SMART" }
                 }
@@ -415,8 +387,7 @@ mod tests {
         let message: ServerMessage = serde_json::from_str(
             r#"{
                 "serverContent": {
-                    "inputTranscription": { "text": "你好", "languageCode": "zh-TW" },
-                    "modelTurn": { "parts": [{ "inlineData": { "data": "AAAA" } }] }
+                    "inputTranscription": { "text": "你好", "languageCode": "zh-TW" }
                 },
                 "usageMetadata": { "totalTokenCount": 3 }
             }"#,
