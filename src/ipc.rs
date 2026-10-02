@@ -81,7 +81,7 @@ pub async fn send(action: CtlAction) -> Result<()> {
     };
     let (reader, mut writer) = stream.into_split();
     writer
-        .write_all(format!("{}\n", action.as_str()).as_bytes())
+        .write_all(format!("{}\n", action.name()).as_bytes())
         .await?;
     let mut reply = String::new();
     BufReader::new(reader).read_line(&mut reply).await?;

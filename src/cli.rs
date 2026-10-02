@@ -50,14 +50,10 @@ pub enum CtlAction {
 }
 
 impl CtlAction {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CtlAction::Start => "start",
-            CtlAction::Stop => "stop",
-            CtlAction::Toggle => "toggle",
-            CtlAction::Cancel => "cancel",
-            CtlAction::Quit => "quit",
-        }
+    /// The name of the action on the command line, which the running instance is sent too.
+    pub fn name(self) -> String {
+        let value = self.to_possible_value().expect("no action is skipped");
+        value.get_name().to_owned()
     }
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -229,7 +225,7 @@ mod tests {
     #[test]
     fn ctl_actions_round_trip() {
         for action in CtlAction::value_variants() {
-            assert_eq!(CtlAction::parse(action.as_str()), Some(*action));
+            assert_eq!(CtlAction::parse(&action.name()), Some(*action));
         }
         assert_eq!(CtlAction::parse("bogus"), None);
     }
