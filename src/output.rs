@@ -261,7 +261,7 @@ impl Emitter {
 
     pub async fn emit(&mut self, text: &str) -> Result<()> {
         match self {
-            Self::Type => run("wtype", &["--", text]).await,
+            Self::Type => run("wtype", &["--", text], None).await,
             Self::Paste { keyboard, keys } => {
                 copy(text, &[]).await?;
                 // Terminals such as GNOME Terminal paste the primary selection, which is that of
@@ -317,12 +317,26 @@ fn virtual_keyboard() -> Result<VirtualDevice> {
     )
 }
 
-async fn run(program: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(program)
+/// Runs `program` until it exits, with `input` on its standard input if there is any.
+async fn run(program: &str, args: &[&str], input: Option<&str>) -> Result<()> {
+    let stdin = match input {
+        Some(_) => Stdio::piped(),
+        None => Stdio::inherit(),
+    };
+    let mut child = Command::new(program)
         .args(args)
-        .status()
-        .await
+        .stdin(stdin)
+        .spawn()
         .with_context(|| format!("cannot run {program}"))?;
+    if let Some(input) = input {
+        // The pipe is closed at the end of this block, which ends the input.
+        let mut pipe = child
+            .stdin
+            .take()
+            .with_context(|| format!("cannot write to {program}"))?;
+        pipe.write_all(input.as_bytes()).await?;
+    }
+    let status = child.wait().await?;
     if !status.success() {
         bail!("{program} failed ({status})");
     }
@@ -330,23 +344,12 @@ async fn run(program: &str, args: &[&str]) -> Result<()> {
 }
 
 /// Copies `text` with wl-copy and its `options`: to the clipboard, unless they say otherwise.
+/// wl-copy only sets the clipboard, and then keeps serving it in the background, once its input
+/// has ended.
 async fn copy(text: &str, options: &[&str]) -> Result<()> {
-    let mut child = Command::new("wl-copy")
-        .args(["--type", "text/plain;charset=utf-8"])
-        .args(options)
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("cannot run wl-copy")?;
-    // wl-copy only sets the clipboard, and then keeps serving it in the background, once its
-    // input has ended.
-    let mut stdin = child.stdin.take().context("cannot write to wl-copy")?;
-    stdin.write_all(text.as_bytes()).await?;
-    drop(stdin);
-    let status = child.wait().await?;
-    if !status.success() {
-        bail!("wl-copy failed ({status})");
-    }
-    Ok(())
+    let mut args = vec!["--type", "text/plain;charset=utf-8"];
+    args.extend(options);
+    run("wl-copy", &args, Some(text)).await
 }
 
 async fn press(keyboard: &mut VirtualDevice, keys: &[KeyCode]) -> Result<()> {
