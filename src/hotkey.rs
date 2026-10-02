@@ -8,6 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -26,12 +27,17 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 const RELEASED: i32 = 0;
 const PRESSED: i32 = 1;
 
+/// Identifies a device among those listened to since the program started.
+pub type DeviceId = u32;
+
+static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardEvent {
-    /// A key was released (0), pressed (1) or repeated (2).
-    Key(KeyCode, i32),
-    /// A keyboard was unplugged, so the keys held on it will not be reported as released.
-    Unplugged,
+    /// A key of a device was released (0), pressed (1) or repeated (2).
+    Key(DeviceId, KeyCode, i32),
+    /// A device was unplugged, so the keys held on it will not be reported as released.
+    Unplugged(DeviceId),
 }
 
 /// Parses a key name such as `KEY_RIGHTCTRL`, `rightctrl`, `F9`, `BTN_SIDE` or `ctrl`.
@@ -82,38 +88,41 @@ pub enum PushToTalk {
 /// Turns keyboard events into push-to-talk events, and tracks whether typing has to wait.
 pub struct Tracker {
     key: KeyCode,
-    down: bool,
+    /// The device on which the key is held.
+    down: Option<DeviceId>,
     chorded: bool,
-    modifiers: HashSet<KeyCode>,
+    /// The modifiers that are held, each with the device it is held on.
+    modifiers: HashSet<(DeviceId, KeyCode)>,
 }
 
 impl Tracker {
     pub fn new(key: KeyCode) -> Self {
         Self {
             key,
-            down: false,
+            down: None,
             chorded: false,
             modifiers: HashSet::new(),
         }
     }
 
     pub fn handle(&mut self, event: KeyboardEvent) -> Option<PushToTalk> {
-        let (code, value) = match event {
-            KeyboardEvent::Key(code, value) => (code, value),
-            KeyboardEvent::Unplugged => {
-                self.modifiers.clear();
-                return self.handle(KeyboardEvent::Key(self.key, RELEASED));
+        let (device, code, value) = match event {
+            KeyboardEvent::Key(device, code, value) => (device, code, value),
+            // Only the keys held on that device are released.
+            KeyboardEvent::Unplugged(device) => {
+                self.modifiers.retain(|&(holder, _)| holder != device);
+                (device, self.key, RELEASED)
             }
         };
         if code == self.key {
             return match value {
-                PRESSED if !self.down => {
-                    self.down = true;
+                PRESSED if self.down.is_none() => {
+                    self.down = Some(device);
                     self.chorded = false;
                     Some(PushToTalk::Press)
                 }
-                RELEASED if self.down => {
-                    self.down = false;
+                RELEASED if self.down == Some(device) => {
+                    self.down = None;
                     (!self.chorded).then_some(PushToTalk::Release)
                 }
                 _ => None,
@@ -122,15 +131,15 @@ impl Tracker {
         if is_modifier(code) {
             match value {
                 PRESSED => {
-                    self.modifiers.insert(code);
+                    self.modifiers.insert((device, code));
                 }
                 RELEASED => {
-                    self.modifiers.remove(&code);
+                    self.modifiers.remove(&(device, code));
                 }
                 _ => {}
             }
         }
-        if value == PRESSED && self.down && !self.chorded && is_keyboard_key(code) {
+        if value == PRESSED && self.down.is_some() && !self.chorded && is_keyboard_key(code) {
             self.chorded = true;
             return Some(PushToTalk::Cancel);
         }
@@ -139,7 +148,7 @@ impl Tracker {
 
     /// Whether keys are held that would turn typed text into shortcuts.
     pub fn keys_held(&self) -> bool {
-        self.down || !self.modifiers.is_empty()
+        self.down.is_some() || !self.modifiers.is_empty()
     }
 }
 
@@ -276,13 +285,14 @@ fn listen_to(
     listening: &Arc<Mutex<HashSet<PathBuf>>>,
 ) -> bool {
     let name = device.name().unwrap_or("unnamed device").to_owned();
+    let id = NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed);
     listening.lock().unwrap().insert(path.clone());
     let events = events.clone();
     let listening = listening.clone();
     let spawned = thread::Builder::new().name("input".into()).spawn(move || {
-        let result = forward(device, &events);
+        let result = forward(id, device, &events);
         listening.lock().unwrap().remove(&path);
-        let _ = events.send(KeyboardEvent::Unplugged);
+        let _ = events.send(KeyboardEvent::Unplugged(id));
         if let Err(err) = result {
             tracing::debug!("stopped listening to {}: {err}", path.display());
         }
@@ -299,13 +309,17 @@ fn listen_to(
     }
 }
 
-fn forward(mut device: Device, events: &UnboundedSender<KeyboardEvent>) -> io::Result<()> {
+fn forward(
+    id: DeviceId,
+    mut device: Device,
+    events: &UnboundedSender<KeyboardEvent>,
+) -> io::Result<()> {
     loop {
         for event in device.fetch_events()? {
             if event.event_type() != EventType::KEY {
                 continue;
             }
-            let key = KeyboardEvent::Key(KeyCode::new(event.code()), event.value());
+            let key = KeyboardEvent::Key(id, KeyCode::new(event.code()), event.value());
             if events.send(key).is_err() {
                 return Ok(());
             }
@@ -319,7 +333,7 @@ pub async fn print_keys() -> Result<()> {
     listen(None, sender)?;
     println!("Press keys to see their names; press Ctrl+C to quit.");
     while let Some(event) = events.recv().await {
-        if let KeyboardEvent::Key(code, PRESSED) = event {
+        if let KeyboardEvent::Key(_, code, PRESSED) = event {
             println!("{code:?}");
         }
     }
@@ -348,13 +362,27 @@ mod tests {
     use evdev::AttributeSet;
 
     const PTT: KeyCode = KeyCode::KEY_F9;
+    const KEYBOARD: DeviceId = 0;
+    const OTHER: DeviceId = 1;
+
+    fn press_on(tracker: &mut Tracker, device: DeviceId, code: KeyCode) -> Option<PushToTalk> {
+        tracker.handle(KeyboardEvent::Key(device, code, PRESSED))
+    }
+
+    fn release_on(tracker: &mut Tracker, device: DeviceId, code: KeyCode) -> Option<PushToTalk> {
+        tracker.handle(KeyboardEvent::Key(device, code, RELEASED))
+    }
 
     fn press(tracker: &mut Tracker, code: KeyCode) -> Option<PushToTalk> {
-        tracker.handle(KeyboardEvent::Key(code, PRESSED))
+        press_on(tracker, KEYBOARD, code)
     }
 
     fn release(tracker: &mut Tracker, code: KeyCode) -> Option<PushToTalk> {
-        tracker.handle(KeyboardEvent::Key(code, RELEASED))
+        release_on(tracker, KEYBOARD, code)
+    }
+
+    fn unplug(tracker: &mut Tracker, device: DeviceId) -> Option<PushToTalk> {
+        tracker.handle(KeyboardEvent::Unplugged(device))
     }
 
     #[test]
@@ -373,7 +401,7 @@ mod tests {
         let mut tracker = Tracker::new(PTT);
         assert_eq!(press(&mut tracker, PTT), Some(Press));
         assert!(tracker.keys_held());
-        assert_eq!(tracker.handle(KeyboardEvent::Key(PTT, 2)), None);
+        assert_eq!(tracker.handle(KeyboardEvent::Key(KEYBOARD, PTT, 2)), None);
         assert_eq!(release(&mut tracker, PTT), Some(Release));
         assert!(!tracker.keys_held());
         assert_eq!(release(&mut tracker, PTT), None);
@@ -414,7 +442,18 @@ mod tests {
         release(&mut tracker, KeyCode::KEY_LEFTMETA);
         assert!(!tracker.keys_held());
         press(&mut tracker, KeyCode::KEY_RIGHTSHIFT);
-        tracker.handle(KeyboardEvent::Unplugged);
+        unplug(&mut tracker, KEYBOARD);
+        assert!(!tracker.keys_held());
+    }
+
+    #[test]
+    fn tracks_the_modifiers_of_each_device() {
+        let mut tracker = Tracker::new(PTT);
+        press(&mut tracker, KeyCode::KEY_LEFTCTRL);
+        press_on(&mut tracker, OTHER, KeyCode::KEY_LEFTCTRL);
+        release(&mut tracker, KeyCode::KEY_LEFTCTRL);
+        assert!(tracker.keys_held());
+        release_on(&mut tracker, OTHER, KeyCode::KEY_LEFTCTRL);
         assert!(!tracker.keys_held());
     }
 
@@ -436,7 +475,31 @@ mod tests {
     fn unplugging_releases_the_key() {
         let mut tracker = Tracker::new(PTT);
         press(&mut tracker, PTT);
-        assert_eq!(tracker.handle(KeyboardEvent::Unplugged), Some(Release));
-        assert_eq!(tracker.handle(KeyboardEvent::Unplugged), None);
+        assert_eq!(unplug(&mut tracker, KEYBOARD), Some(Release));
+        assert_eq!(unplug(&mut tracker, KEYBOARD), None);
+    }
+
+    #[test]
+    fn unplugging_another_device_releases_nothing() {
+        let mut tracker = Tracker::new(PTT);
+        press(&mut tracker, KeyCode::KEY_LEFTSHIFT);
+        press_on(&mut tracker, OTHER, KeyCode::KEY_LEFTALT);
+        assert_eq!(press(&mut tracker, PTT), Some(Press));
+        assert_eq!(unplug(&mut tracker, OTHER), None);
+        assert_eq!(release(&mut tracker, PTT), Some(Release));
+        // Shift is still held on the keyboard, unlike Alt on the unplugged device.
+        assert!(tracker.keys_held());
+        release(&mut tracker, KeyCode::KEY_LEFTSHIFT);
+        assert!(!tracker.keys_held());
+    }
+
+    #[test]
+    fn the_key_is_released_on_the_device_it_was_pressed_on() {
+        let mut tracker = Tracker::new(PTT);
+        assert_eq!(press(&mut tracker, PTT), Some(Press));
+        assert_eq!(press_on(&mut tracker, OTHER, PTT), None);
+        assert_eq!(release_on(&mut tracker, OTHER, PTT), None);
+        assert!(tracker.keys_held());
+        assert_eq!(release(&mut tracker, PTT), Some(Release));
     }
 }
