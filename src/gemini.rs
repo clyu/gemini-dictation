@@ -62,20 +62,14 @@ pub struct SessionConfig {
     pub mode: &'static str,
 }
 
-pub enum Event {
-    /// A piece of the final transcript, to be appended to the earlier pieces.
-    Transcript(String),
-    /// A low-latency preview of the transcript, which later messages supersede.
-    Interim(String),
-}
-
-/// Transcribes the audio received from `audio`, which ends when the sender is dropped.
+/// Transcribes the audio received from `audio`, which ends when the sender is dropped. Each piece
+/// of the transcript is passed to `on_transcript`, to be appended to the earlier pieces.
 ///
 /// The connection is opened immediately; audio that arrives in the meantime is buffered.
 pub async fn transcribe(
     config: &SessionConfig,
     mut audio: UnboundedReceiver<Vec<i16>>,
-    mut on_event: impl FnMut(Event),
+    mut on_transcript: impl FnMut(String),
 ) -> Result<()> {
     let url = format!("{ENDPOINT}?key={}", config.api_key);
     let open = async {
@@ -118,7 +112,7 @@ pub async fn transcribe(
             message = next_message(&mut stream) => {
                 let message = message?
                     .context("the Gemini Live API closed the connection during the recording")?;
-                report(message, &mut on_event);
+                report(message, &mut on_transcript);
             }
         }
     }
@@ -145,7 +139,7 @@ pub async fn transcribe(
                     tracing::debug!("the server closed the session");
                     break;
                 };
-                if report(message, &mut on_event) && !complete {
+                if report(message, &mut on_transcript) && !complete {
                     complete = true;
                     let elapsed = ended.elapsed().as_millis();
                     tracing::debug!("the transcript was complete {elapsed} ms after the recording");
@@ -166,9 +160,9 @@ pub async fn transcribe(
     Ok(())
 }
 
-/// Reports the transcripts in `message` to `on_event`, and returns whether it says that the
+/// Reports the transcript in `message` to `on_transcript`, and returns whether it says that the
 /// transcript is complete: the server has acknowledged `activityEnd`, or completed the turn.
-fn report(message: ServerMessage, on_event: &mut impl FnMut(Event)) -> bool {
+fn report(message: ServerMessage, on_transcript: &mut impl FnMut(String)) -> bool {
     if let Some(go_away) = message.go_away {
         tracing::debug!("the server will disconnect in {:?}", go_away.time_left);
     }
@@ -178,10 +172,11 @@ fn report(message: ServerMessage, on_event: &mut impl FnMut(Event)) -> bool {
     if let Some(content) = message.server_content {
         if let Some(transcription) = content.input_transcription {
             tracing::debug!("transcript: {:?}", transcription.text);
-            on_event(Event::Transcript(transcription.text));
+            on_transcript(transcription.text);
         }
+        // A low-latency preview of the transcript, which later messages supersede.
         if let Some(transcription) = content.interim_input_transcription {
-            on_event(Event::Interim(transcription.text));
+            tracing::debug!("hearing: {}", transcription.text);
         }
         complete |= content.turn_complete;
     }
@@ -460,14 +455,11 @@ mod tests {
 
     #[test]
     fn reports_transcripts_and_their_completion() {
-        let mut events = Vec::new();
-        let mut on_event = |event: Event| match event {
-            Event::Transcript(text) => events.push(format!("final {text}")),
-            Event::Interim(text) => events.push(format!("interim {text}")),
-        };
+        let mut transcripts = Vec::new();
+        let mut on_transcript = |text: String| transcripts.push(text);
         let mut completes = |json: &str| {
             let message: ServerMessage = serde_json::from_str(json).unwrap();
-            report(message, &mut on_event)
+            report(message, &mut on_transcript)
         };
         // What the server sends for a recording, in this order.
         let started = r#"{"serverContent": {}, "voiceActivity": {"type": "ACTIVITY_START"}}"#;
@@ -488,6 +480,6 @@ mod tests {
         assert!(!completes(go_away));
         assert!(!completes(unknown));
         assert!(completes(last));
-        assert_eq!(events, ["interim 你", "final 你好", "final 嗎"]);
+        assert_eq!(transcripts, ["你好", "嗎"]);
     }
 }

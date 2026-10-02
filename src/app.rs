@@ -17,7 +17,7 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::audio::Recorder;
 use crate::cli::{CtlAction, RunArgs};
-use crate::gemini::{self, Event, SessionConfig};
+use crate::gemini::{self, SessionConfig};
 use crate::hotkey::{self, PushToTalk, Tracker};
 use crate::ipc;
 use crate::output::{self, Emitter, Update};
@@ -259,13 +259,10 @@ impl App {
         let config = self.config.clone();
         let updates = self.updates.clone();
         tokio::spawn(async move {
-            let on_event = |event: Event| match event {
-                Event::Transcript(text) => {
-                    let _ = updates.send(Update::Text(id, text));
-                }
-                Event::Interim(text) => tracing::debug!("hearing: {text}"),
+            let on_transcript = |text| {
+                let _ = updates.send(Update::Text(id, text));
             };
-            if let Err(err) = gemini::transcribe(&config, audio, on_event).await {
+            if let Err(err) = gemini::transcribe(&config, audio, on_transcript).await {
                 tracing::error!("transcription failed: {err:#}");
             }
             let _ = updates.send(Update::End(id));
