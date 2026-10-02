@@ -40,6 +40,12 @@ const CHUNK_SAMPLES: usize = INPUT_SAMPLE_RATE as usize / 10;
 /// The session has to be connected and set up within this long. A session that never ends would
 /// hold up the transcripts of all later recordings, which are delivered in order.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+/// A message has to be sent within this long. When the network is lost, the kernel takes many
+/// minutes to give up on a connection, and a session that waits for it never gets to its other
+/// timeouts.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Closing the connection is only a courtesy, which is not worth waiting for any longer.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Once the recording has ended, the session is closed when the server has been silent for this
 /// long, in case it does not say that the transcript is complete.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(3);
@@ -156,7 +162,7 @@ pub async fn transcribe(
             }
         }
     }
-    let _ = sink.send(Message::Close(None)).await;
+    let _ = timeout(CLOSE_TIMEOUT, sink.send(Message::Close(None))).await;
     Ok(())
 }
 
@@ -227,7 +233,9 @@ where
     S: Sink<Message, Error = tungstenite::Error> + Unpin,
 {
     let text = serde_json::to_string(&message)?;
-    sink.send(Message::text(text)).await?;
+    timeout(SEND_TIMEOUT, sink.send(Message::text(text)))
+        .await
+        .context("timed out sending to the Gemini Live API")??;
     Ok(())
 }
 
