@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+use std::future;
 use std::io;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -73,8 +74,6 @@ pub async fn run(args: RunArgs) -> Result<()> {
         max_length: Duration::from_secs(args.max_record_secs),
     };
     loop {
-        let connect_at = app.connect_at();
-        let stop_at = app.stop_at();
         tokio::select! {
             Some(event) = keyboard.recv() => {
                 let action = tracker.handle(event);
@@ -95,10 +94,8 @@ pub async fn run(args: RunArgs) -> Result<()> {
                 CtlAction::Cancel => app.cancel(),
                 CtlAction::Quit => break,
             },
-            () = sleep_until(connect_at.unwrap_or_else(far_future)), if connect_at.is_some() => {
-                app.connect();
-            }
-            () = sleep_until(stop_at.unwrap_or_else(far_future)), if stop_at.is_some() => {
+            () = wait_until(app.connect_at()) => app.connect(),
+            () = wait_until(app.stop_at()) => {
                 tracing::warn!("stopping the recording after {:?}", app.max_length);
                 app.stop();
             }
@@ -169,8 +166,12 @@ fn config_path(name: &str) -> PathBuf {
     config.join("gemini-dictation").join(name)
 }
 
-fn far_future() -> Instant {
-    Instant::now() + Duration::from_secs(24 * 60 * 60)
+/// Waits until `deadline`, or forever if there is none.
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => sleep_until(deadline).await,
+        None => future::pending().await,
+    }
 }
 
 /// What is done with the audio of a recording.
