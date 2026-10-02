@@ -173,12 +173,25 @@ fn far_future() -> Instant {
     Instant::now() + Duration::from_secs(24 * 60 * 60)
 }
 
+/// What is done with the audio of a recording.
+enum Stage {
+    /// The audio is kept, until the recording has lasted long enough to be transcribed.
+    Buffering(mpsc::UnboundedReceiver<Vec<i16>>),
+    /// A session transcribes the audio.
+    Transcribing(JoinHandle<()>),
+}
+
 struct Recording {
     id: u64,
     started: Instant,
-    /// The recorded audio, until a transcription session takes it.
-    audio: Option<mpsc::UnboundedReceiver<Vec<i16>>>,
-    session: Option<JoinHandle<()>>,
+    stage: Stage,
+}
+
+impl Recording {
+    /// Whether its transcription has yet to start.
+    fn buffering(&self) -> bool {
+        matches!(self.stage, Stage::Buffering(_))
+    }
 }
 
 struct App {
@@ -195,7 +208,7 @@ struct App {
 impl App {
     /// When the pending recording is to be transcribed, if it is still recording by then.
     fn connect_at(&self) -> Option<Instant> {
-        let recording = self.recording.as_ref().filter(|r| r.audio.is_some())?;
+        let recording = self.recording.as_ref().filter(|r| r.buffering())?;
         Some(recording.started + self.min_hold)
     }
 
@@ -220,8 +233,7 @@ impl App {
         self.recording = Some(Recording {
             id: self.next_id,
             started: Instant::now(),
-            audio: Some(audio),
-            session: None,
+            stage: Stage::Buffering(audio),
         });
         if immediately {
             self.connect();
@@ -230,17 +242,22 @@ impl App {
 
     /// Starts transcribing the recording, if that has not started yet.
     fn connect(&mut self) {
-        let Some(recording) = &mut self.recording else {
+        let Some(mut recording) = self.recording.take() else {
             return;
         };
-        let Some(audio) = recording.audio.take() else {
-            return;
+        recording.stage = match recording.stage {
+            Stage::Buffering(audio) => Stage::Transcribing(self.transcribe(recording.id, audio)),
+            transcribing => transcribing,
         };
-        let id = recording.id;
+        self.recording = Some(recording);
+    }
+
+    /// Starts a session that transcribes the `audio` of the recording `id`.
+    fn transcribe(&self, id: u64, audio: mpsc::UnboundedReceiver<Vec<i16>>) -> JoinHandle<()> {
         let _ = self.updates.send(Update::Begin(id));
         let config = self.config.clone();
         let updates = self.updates.clone();
-        recording.session = Some(tokio::spawn(async move {
+        tokio::spawn(async move {
             let on_event = |event: Event| match event {
                 Event::Transcript(text) => {
                     let _ = updates.send(Update::Text(id, text));
@@ -251,7 +268,7 @@ impl App {
                 tracing::error!("transcription failed: {err:#}");
             }
             let _ = updates.send(Update::End(id));
-        }));
+        })
     }
 
     /// Stops recording, and lets the transcription finish.
@@ -260,7 +277,7 @@ impl App {
             return;
         };
         let length = recording.started.elapsed();
-        if recording.audio.is_some() && length < self.min_hold {
+        if recording.buffering() && length < self.min_hold {
             tracing::info!("ignoring a tap of {} ms", length.as_millis());
             self.cancel();
             return;
@@ -277,7 +294,7 @@ impl App {
             return;
         };
         self.recorder.stop();
-        if let Some(session) = recording.session {
+        if let Stage::Transcribing(session) = recording.stage {
             session.abort();
             let _ = self.updates.send(Update::Discard(recording.id));
             tracing::info!("recording cancelled");
