@@ -231,7 +231,12 @@ impl Emitter {
             return Self::Type;
         }
         if !in_path("wl-copy") {
-            tracing::warn!("wtype and wl-copy are not installed; printing transcripts instead");
+            let reason = if without_protocol {
+                "wl-copy is not installed, and wtype does not work on this desktop"
+            } else {
+                "wtype and wl-copy are not installed"
+            };
+            tracing::warn!("{reason}; printing transcripts instead");
             return Self::Stdout;
         }
         match Self::new(OutputMode::Paste, paste_keys) {
