@@ -102,7 +102,7 @@ impl Queue {
                 if !transcript.ended {
                     transcript.pending = line_break.to_owned();
                 }
-                if !transcript.started && needs_space(self.last_char, &text) {
+                if !transcript.started && needs_space(self.last_char, text.chars().next()) {
                     ready.push(' ');
                 }
                 if let Some(last) = text.chars().next_back() {
@@ -120,19 +120,25 @@ impl Queue {
     }
 }
 
-/// Whether `text` needs a space to separate it from the earlier text, which ended with `last`.
-/// Scripts such as Chinese and Japanese are written without spaces.
-fn needs_space(last: Option<char>, text: &str) -> bool {
-    let (Some(last), Some(first)) = (last, text.chars().next()) else {
+/// Punctuation that is written without a space after it.
+const OPENING: &str = "([{“‘";
+/// Punctuation that is written without a space before it.
+const CLOSING: &str = ".,!?:;%)]}”’";
+
+/// Whether a space belongs between `last` and `next`, the characters on either side of a line
+/// break or of the boundary between two transcripts, if there is text on both sides. Chinese and
+/// Japanese are written without spaces, and so is punctuation on the side of its word.
+fn needs_space(last: Option<char>, next: Option<char>) -> bool {
+    let (Some(last), Some(next)) = (last, next) else {
         return false;
     };
-    let ends_word = last.is_ascii_alphanumeric() || ".,!?:;)".contains(last);
-    ends_word && first.is_ascii_alphanumeric()
+    let spaced = |c: char| !c.is_whitespace() && !is_cjk(c);
+    spaced(last) && spaced(next) && !OPENING.contains(last) && !CLOSING.contains(next)
 }
 
 /// Replaces each line break in `text`, together with the whitespace around it, with a space, or
-/// with nothing next to Chinese or Japanese, so that a transcript never presses Enter. `last` is
-/// the character before `text`.
+/// with nothing where no space belongs, so that a transcript never presses Enter. `last` is the
+/// character before `text`.
 ///
 /// Returns the joined text, and the line break at the end of `text` if there is one, which can
 /// only be replaced once the text that follows it is known.
@@ -147,7 +153,7 @@ fn join_lines(text: &str, mut last: Option<char>) -> (String, &str) {
         let Some(next) = after.chars().next() else {
             return (joined, &rest[before.len()..]);
         };
-        if last.is_some_and(|c| !c.is_whitespace() && !is_cjk(c) && !is_cjk(next)) {
+        if needs_space(last, Some(next)) {
             joined.push(' ');
         }
         rest = after;
@@ -475,16 +481,40 @@ mod tests {
     }
 
     #[test]
-    fn spaces_between_transcripts() {
-        assert!(needs_space(Some('.'), "Next"));
-        assert!(needs_space(Some('a'), "1"));
-        assert!(!needs_space(None, "a"));
-        assert!(!needs_space(Some(' '), "a"));
-        assert!(!needs_space(Some('('), "a"));
-        assert!(!needs_space(Some('。'), "a"));
-        assert!(!needs_space(Some('a'), "中"));
-        assert!(!needs_space(Some('a'), ","));
-        assert!(!needs_space(Some('a'), ""));
+    fn spaces_between_words() {
+        let space = |last, next| needs_space(Some(last), Some(next));
+        assert!(space('.', 'N'));
+        assert!(space('a', '1'));
+        assert!(space('%', 'N'));
+        assert!(space('"', 'T'));
+        assert!(space('a', '('));
+        assert!(space('é', 'É'));
+        assert!(space('요', '안'));
+        assert!(!space(' ', 'a'));
+        assert!(!space('(', 'a'));
+        assert!(!space('a', ','));
+        assert!(!space('a', ')'));
+        assert!(!space('。', 'a'));
+        assert!(!space('a', '中'));
+        assert!(!needs_space(None, Some('a')));
+        assert!(!needs_space(Some('a'), None));
+    }
+
+    #[test]
+    fn line_breaks_and_transcripts_are_separated_alike() {
+        let pieces = ["100%", "(ok)", ", \"hi\"", "Then", "中文", "end"];
+        let expected = "100% (ok), \"hi\" Then中文end";
+
+        let mut queue = Queue::new(false);
+        let updates = [Begin(1), text(1, &pieces.join("\n")), End(1)];
+        assert_eq!(feed(&mut queue, updates), expected);
+
+        let mut queue = Queue::new(false);
+        let mut delivered = String::new();
+        for (id, piece) in (1..).zip(pieces) {
+            delivered += &feed(&mut queue, [Begin(id), text(id, piece), End(id)]);
+        }
+        assert_eq!(delivered, expected);
     }
 
     #[test]
