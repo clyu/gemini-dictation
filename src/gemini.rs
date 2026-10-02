@@ -33,7 +33,9 @@ const AUDIO_MIME_TYPE: &str = "audio/pcm;rate=16000";
 /// Audio is sent in chunks of 100 ms.
 const CHUNK_SAMPLES: usize = INPUT_SAMPLE_RATE as usize / 10;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The session has to be connected and set up within this long. A session that never ends would
+/// hold up the transcripts of all later recordings, which are delivered in order.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Once the recording has ended, the session is closed when the server has been silent for this
 /// long, in case it does not complete the turn.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(3);
@@ -65,22 +67,27 @@ pub async fn transcribe(
     mut on_event: impl FnMut(Event),
 ) -> Result<()> {
     let url = format!("{ENDPOINT}?key={}", config.api_key);
-    let (socket, _) = timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
-        .await
-        .context("timed out connecting to the Gemini Live API")?
-        .map_err(describe_connect_error)?;
-    let (mut sink, mut stream) = socket.split();
+    let open = async {
+        let (socket, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(describe_connect_error)?;
+        let (mut sink, mut stream) = socket.split();
 
-    let setup = ClientMessage::Setup(Setup::new(config));
-    send(&mut sink, setup).await?;
-    loop {
-        let message = next_message(&mut stream)
-            .await?
-            .context("the Gemini Live API closed the connection during setup")?;
-        if message.setup_complete.is_some() {
-            break;
+        let setup = ClientMessage::Setup(Setup::new(config));
+        send(&mut sink, setup).await?;
+        loop {
+            let message = next_message(&mut stream)
+                .await?
+                .context("the Gemini Live API closed the connection during setup")?;
+            if message.setup_complete.is_some() {
+                break;
+            }
         }
-    }
+        anyhow::Ok((sink, stream))
+    };
+    let (mut sink, mut stream) = timeout(OPEN_TIMEOUT, open)
+        .await
+        .context("timed out opening a Gemini Live API session")??;
     tracing::debug!("session set up");
     send(&mut sink, ClientMessage::activity_start()).await?;
 
