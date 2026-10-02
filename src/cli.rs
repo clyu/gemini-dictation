@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::gemini::MAX_RECORDING_SECS;
+
 pub const DEFAULT_MODEL: &str = "gemini-3.5-transcribe-live";
 
 /// Push-to-talk dictation for Wayland, transcribed by the Gemini Live API.
@@ -118,8 +120,13 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 250)]
     pub min_hold_ms: u64,
 
-    /// Recordings are stopped after this many seconds.
-    #[arg(long, default_value_t = 300)]
+    /// Recordings are stopped after this many seconds, at most 580: the Live API ends a session
+    /// after 10 minutes, and needs some of that to finish the transcript.
+    #[arg(
+        long,
+        default_value_t = 300,
+        value_parser = clap::value_parser!(u64).range(1..=MAX_RECORDING_SECS)
+    )]
     pub max_record_secs: u64,
 }
 
@@ -206,6 +213,17 @@ mod tests {
         ];
         let cli = Cli::try_parse_from(args).unwrap();
         assert_eq!(cli.run.vocabulary, ["Gemini", "Wayland"]);
+    }
+
+    #[test]
+    fn max_record_secs_is_limited() {
+        let parse = |secs: &str| {
+            let args = ["gemini-dictation", "--max-record-secs", secs];
+            Cli::try_parse_from(args)
+        };
+        assert_eq!(parse("580").unwrap().run.max_record_secs, 580);
+        assert!(parse("581").is_err());
+        assert!(parse("0").is_err());
     }
 
     #[test]

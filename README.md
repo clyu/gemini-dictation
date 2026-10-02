@@ -92,7 +92,7 @@ To stop it, choose **Quit** in the menu of its icon (right-click it in the appli
 | `--paste-keys` | `shift+insert` | Keys pressed by the `paste` output, such as `ctrl+v` |
 | `--mic` | default input | Microphone, as listed by `gemini-dictation devices` |
 | `--min-hold-ms` | `250` | Shorter presses are ignored |
-| `--max-record-secs` | `300` | Recordings are stopped after this long |
+| `--max-record-secs` | `300` | Recordings are stopped after this long; at most `580`, as the Live API ends a session after 10 minutes |
 | `--no-hotkey` | | Do not read keyboards; only `gemini-dictation ctl` works |
 | `-v`, `--verbose` | | Log debugging details, such as the interim transcripts (`RUST_LOG` also works) |
 

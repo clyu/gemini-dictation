@@ -48,6 +48,10 @@ const QUIET_TIMEOUT: Duration = Duration::from_secs(3);
 const LINGER_TIMEOUT: Duration = Duration::from_millis(500);
 /// Once the recording has ended, the session is closed after this long in any case.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(20);
+/// The Live API ends a transcription session after this long.
+const SESSION_LIMIT: Duration = Duration::from_secs(10 * 60);
+/// The longest recording, in seconds, that leaves its session the time to finish.
+pub const MAX_RECORDING_SECS: u64 = SESSION_LIMIT.as_secs() - FINISH_TIMEOUT.as_secs();
 
 pub struct SessionConfig {
     pub api_key: String,
