@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Write};
 use std::mem;
-use std::ops::RangeInclusive;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -173,18 +172,16 @@ fn is_line_break(c: char) -> bool {
 }
 
 /// Chinese and Japanese characters and punctuation, which are written without spaces.
-const CJK: [RangeInclusive<char>; 7] = [
-    '\u{2e80}'..='\u{303f}',
-    '\u{3040}'..='\u{31ff}',
-    '\u{3400}'..='\u{4dbf}',
-    '\u{4e00}'..='\u{9fff}',
-    '\u{f900}'..='\u{faff}',
-    '\u{ff00}'..='\u{ffef}',
-    '\u{20000}'..='\u{3ffff}',
-];
-
 fn is_cjk(c: char) -> bool {
-    CJK.iter().any(|range| range.contains(&c))
+    matches!(
+        c,
+        '\u{2e80}'..='\u{31ff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{ff00}'..='\u{ffef}'
+            | '\u{20000}'..='\u{3ffff}'
+    )
 }
 
 pub enum Emitter {
