@@ -105,15 +105,12 @@ pub async fn transcribe(
     let mut pending: Vec<i16> = Vec::with_capacity(2 * CHUNK_SAMPLES);
     loop {
         tokio::select! {
-            samples = audio.recv() => {
-                let Some(samples) = samples else {
+            more = next_chunk(&mut audio, &mut pending) => {
+                if !more {
                     break;
-                };
-                pending.extend_from_slice(&samples);
-                if pending.len() >= CHUNK_SAMPLES {
-                    send(&mut sink, ClientMessage::audio(&pending)).await?;
-                    pending.clear();
                 }
+                send(&mut sink, ClientMessage::audio(&pending)).await?;
+                pending.clear();
             }
             message = next_message(&mut stream) => {
                 let message = message?
@@ -121,9 +118,6 @@ pub async fn transcribe(
                 report(message, &mut on_transcript);
             }
         }
-    }
-    if !pending.is_empty() {
-        send(&mut sink, ClientMessage::audio(&pending)).await?;
     }
     send(&mut sink, ClientMessage::activity_end()).await?;
 
@@ -164,6 +158,20 @@ pub async fn transcribe(
     }
     let _ = timeout(CLOSE_TIMEOUT, sink.send(Message::Close(None))).await;
     Ok(())
+}
+
+/// Collects audio in `chunk` until there is enough of it to send, or the recording has ended, and
+/// returns whether there is any to send.
+///
+/// It may be interrupted and called again, as the audio collected so far is kept in `chunk`.
+async fn next_chunk(audio: &mut UnboundedReceiver<Vec<i16>>, chunk: &mut Vec<i16>) -> bool {
+    while chunk.len() < CHUNK_SAMPLES {
+        let Some(samples) = audio.recv().await else {
+            break;
+        };
+        chunk.extend_from_slice(&samples);
+    }
+    !chunk.is_empty()
 }
 
 /// Reports the transcript in `message` to `on_transcript`, and returns whether it says that the
@@ -459,6 +467,25 @@ mod tests {
         let message: ServerMessage =
             serde_json::from_str(r#"{"serverContent": {"turnComplete": true}}"#).unwrap();
         assert!(message.server_content.unwrap().turn_complete);
+    }
+
+    #[tokio::test]
+    async fn collects_audio_in_chunks() {
+        let (sender, mut audio) = tokio::sync::mpsc::unbounded_channel();
+        // Two pieces that only make a chunk together, and what is left when the recording ends.
+        sender.send(vec![1; CHUNK_SAMPLES - 1]).unwrap();
+        sender.send(vec![2; 2]).unwrap();
+        sender.send(vec![3; 5]).unwrap();
+        drop(sender);
+
+        let mut chunk = Vec::new();
+        assert!(next_chunk(&mut audio, &mut chunk).await);
+        assert_eq!(chunk.len(), CHUNK_SAMPLES + 1);
+        chunk.clear();
+        assert!(next_chunk(&mut audio, &mut chunk).await);
+        assert_eq!(chunk, [3; 5]);
+        chunk.clear();
+        assert!(!next_chunk(&mut audio, &mut chunk).await);
     }
 
     #[test]
