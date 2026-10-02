@@ -263,15 +263,16 @@ impl Emitter {
         match self {
             Self::Type => run("wtype", &["--", text]).await,
             Self::Paste { keyboard, keys } => {
-                copy(text, Selection::Clipboard).await?;
-                // Terminals such as GNOME Terminal paste the primary selection on Shift+Insert.
-                if let Err(err) = copy(text, Selection::Primary).await {
+                copy(text, &[]).await?;
+                // Terminals such as GNOME Terminal paste the primary selection, which is that of
+                // the text selected last, on Shift+Insert.
+                if let Err(err) = copy(text, &["--primary"]).await {
                     tracing::debug!("cannot set the primary selection: {err:#}");
                 }
                 sleep(CLIPBOARD_DELAY).await;
                 press(keyboard, keys).await
             }
-            Self::Clipboard => copy(text, Selection::Clipboard).await,
+            Self::Clipboard => copy(text, &[]).await,
             Self::Stdout => print(text).context("cannot write to standard output"),
         }
     }
@@ -328,20 +329,11 @@ async fn run(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Selection {
-    Clipboard,
-    /// The selection of the text selected last, which terminals paste on Shift+Insert.
-    Primary,
-}
-
-async fn copy(text: &str, selection: Selection) -> Result<()> {
-    let mut command = Command::new("wl-copy");
-    command.args(["--type", "text/plain;charset=utf-8"]);
-    if selection == Selection::Primary {
-        command.arg("--primary");
-    }
-    let mut child = command
+/// Copies `text` with wl-copy and its `options`: to the clipboard, unless they say otherwise.
+async fn copy(text: &str, options: &[&str]) -> Result<()> {
+    let mut child = Command::new("wl-copy")
+        .args(["--type", "text/plain;charset=utf-8"])
+        .args(options)
         .stdin(Stdio::piped())
         .spawn()
         .context("cannot run wl-copy")?;
