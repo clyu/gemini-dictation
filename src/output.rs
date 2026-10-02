@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 
 use crate::cli::OutputMode;
-use crate::hotkey::{VIRTUAL_KEYBOARD_NAME, parse_key};
+use crate::hotkey::{PRESSED, RELEASED, VIRTUAL_KEYBOARD_NAME, parse_key};
 
 /// Gives the compositor time to take the new clipboard contents before pasting them.
 const CLIPBOARD_DELAY: Duration = Duration::from_millis(100);
@@ -356,8 +356,8 @@ async fn copy(text: &str, options: &[&str]) -> Result<()> {
 }
 
 async fn press(keyboard: &mut VirtualDevice, keys: &[KeyCode]) -> Result<()> {
-    let presses = keys.iter().map(|&key| (key, 1));
-    let releases = keys.iter().rev().map(|&key| (key, 0));
+    let presses = keys.iter().map(|&key| (key, PRESSED));
+    let releases = keys.iter().rev().map(|&key| (key, RELEASED));
     for (key, value) in presses.chain(releases) {
         keyboard.emit(&[InputEvent::new(EventType::KEY.0, key.code(), value)])?;
         sleep(KEY_DELAY).await;

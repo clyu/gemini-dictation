@@ -25,8 +25,9 @@ const INPUT_DIR: &str = "/dev/input";
 /// How often to check for keyboards that were plugged in.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 
-const RELEASED: i32 = 0;
-const PRESSED: i32 = 1;
+/// The values of the events of a key that is released and pressed.
+pub const RELEASED: i32 = 0;
+pub const PRESSED: i32 = 1;
 
 /// Identifies a device among those listened to since the program started.
 pub type DeviceId = u32;
