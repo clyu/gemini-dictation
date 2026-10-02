@@ -198,7 +198,8 @@ pub enum Emitter {
 }
 
 impl Emitter {
-    pub fn new(mode: OutputMode, paste_keys: &str) -> Result<Self> {
+    /// `paste_keys` is the key combination that the paste output presses.
+    pub fn new(mode: OutputMode, paste_keys: Vec<KeyCode>) -> Result<Self> {
         match mode {
             OutputMode::Auto => Ok(Self::detect(paste_keys)),
             OutputMode::Type => {
@@ -208,7 +209,7 @@ impl Emitter {
             OutputMode::Paste => {
                 require("wl-copy")?;
                 Ok(Self::Paste {
-                    keys: parse_keys(paste_keys)?,
+                    keys: paste_keys,
                     keyboard: virtual_keyboard()?,
                 })
             }
@@ -220,7 +221,7 @@ impl Emitter {
         }
     }
 
-    fn detect(paste_keys: &str) -> Self {
+    fn detect(paste_keys: Vec<KeyCode>) -> Self {
         // GNOME and KDE do not offer the virtual keyboard protocol that wtype relies on.
         let desktop = env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
@@ -287,7 +288,7 @@ fn require(program: &str) -> Result<()> {
 }
 
 /// Parses a key combination such as `ctrl+shift+v`.
-fn parse_keys(combination: &str) -> Result<Vec<KeyCode>> {
+pub fn parse_keys(combination: &str) -> Result<Vec<KeyCode>> {
     combination
         .split('+')
         .map(parse_key)

@@ -26,6 +26,9 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let api_key = api_key(args.api_key)?;
     let vocabulary = vocabulary(args.vocabulary)?;
     let key = hotkey::parse_key(&args.key)?;
+    // Parsed here rather than by the paste output, so that a mistake is reported whatever the
+    // output turns out to be.
+    let paste_keys = output::parse_keys(&args.paste_keys)?;
     let config = SessionConfig {
         api_key,
         languages,
@@ -41,7 +44,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let (actions, mut ctl) = mpsc::unbounded_channel();
     let _server = ipc::serve(actions).await?;
 
-    let emitter = Emitter::new(args.output, &args.paste_keys)?;
+    let emitter = Emitter::new(args.output, paste_keys)?;
     tracing::info!("delivering transcripts by {}", emitter.description());
     let (updates, pending_updates) = mpsc::unbounded_channel();
     let (keys_held, keys_held_updates) = watch::channel(false);
