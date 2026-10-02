@@ -4,6 +4,10 @@
 //! `activityEnd`, and the transcript comes from the input audio transcription of a transcription
 //! model such as `gemini-3.5-transcribe-live`.
 //!
+//! That model does not complete the turn. Instead, once it has sent the transcript, it acknowledges
+//! `activityEnd` with a `voiceActivity` message of the type `ACTIVITY_END`. That message is not
+//! documented, so a session also ends when the server has been silent for a while.
+//!
 //! See <https://ai.google.dev/api/live> for the protocol and
 //! <https://ai.google.dev/gemini-api/docs/live-api/live-transcribe> for transcription.
 
@@ -37,8 +41,11 @@ const CHUNK_SAMPLES: usize = INPUT_SAMPLE_RATE as usize / 10;
 /// hold up the transcripts of all later recordings, which are delivered in order.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Once the recording has ended, the session is closed when the server has been silent for this
-/// long, in case it does not complete the turn.
+/// long, in case it does not say that the transcript is complete.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(3);
+/// Once the transcript is said to be complete, the session is only closed when the server has been
+/// silent for this long, as the Live API does not guarantee the order of its messages.
+const LINGER_TIMEOUT: Duration = Duration::from_millis(500);
 /// Once the recording has ended, the session is closed after this long in any case.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -92,55 +99,89 @@ pub async fn transcribe(
     send(&mut sink, ClientMessage::activity_start()).await?;
 
     let mut pending: Vec<i16> = Vec::with_capacity(2 * CHUNK_SAMPLES);
-    let mut recording = true;
-    let mut quiet_deadline = Instant::now();
-    let mut final_deadline = Instant::now();
     loop {
         tokio::select! {
-            samples = audio.recv(), if recording => {
-                if let Some(samples) = samples {
-                    pending.extend_from_slice(&samples);
-                    if pending.len() >= CHUNK_SAMPLES {
-                        send(&mut sink, ClientMessage::audio(&pending)).await?;
-                        pending.clear();
-                    }
-                    continue;
-                }
-                if !pending.is_empty() {
-                    send(&mut sink, ClientMessage::audio(&pending)).await?;
-                }
-                send(&mut sink, ClientMessage::activity_end()).await?;
-                recording = false;
-                let now = Instant::now();
-                quiet_deadline = now + QUIET_TIMEOUT;
-                final_deadline = now + FINISH_TIMEOUT;
-            }
-            message = next_message(&mut stream) => {
-                let Some(message) = message? else {
+            samples = audio.recv() => {
+                let Some(samples) = samples else {
                     break;
                 };
-                if let Some(content) = message.server_content {
-                    if let Some(transcription) = content.input_transcription {
-                        tracing::debug!("transcript: {:?}", transcription.text);
-                        on_event(Event::Transcript(transcription.text));
-                    }
-                    if let Some(transcription) = content.interim_input_transcription {
-                        on_event(Event::Interim(transcription.text));
-                    }
-                    if !recording && content.turn_complete {
-                        break;
-                    }
+                pending.extend_from_slice(&samples);
+                if pending.len() >= CHUNK_SAMPLES {
+                    send(&mut sink, ClientMessage::audio(&pending)).await?;
+                    pending.clear();
                 }
-                if let Some(go_away) = message.go_away {
-                    tracing::debug!("the server will disconnect in {:?}", go_away.time_left);
-                }
-                quiet_deadline = Instant::now() + QUIET_TIMEOUT;
             }
-            () = sleep_until(quiet_deadline.min(final_deadline)), if !recording => break,
+            message = next_message(&mut stream) => {
+                let message = message?
+                    .context("the Gemini Live API closed the connection during the recording")?;
+                report(message, &mut on_event);
+            }
+        }
+    }
+    if !pending.is_empty() {
+        send(&mut sink, ClientMessage::audio(&pending)).await?;
+    }
+    send(&mut sink, ClientMessage::activity_end()).await?;
+
+    // The recording has ended; the rest of its transcript is still to come.
+    let ended = Instant::now();
+    let final_deadline = ended + FINISH_TIMEOUT;
+    let mut heard = ended;
+    let mut complete = false;
+    loop {
+        let quiet = if complete {
+            LINGER_TIMEOUT
+        } else {
+            QUIET_TIMEOUT
+        };
+        let quiet_deadline = heard + quiet;
+        tokio::select! {
+            message = next_message(&mut stream) => {
+                let Some(message) = message? else {
+                    tracing::debug!("the server closed the session");
+                    break;
+                };
+                if report(message, &mut on_event) && !complete {
+                    complete = true;
+                    let elapsed = ended.elapsed().as_millis();
+                    tracing::debug!("the transcript was complete {elapsed} ms after the recording");
+                }
+                heard = Instant::now();
+            }
+            () = sleep_until(quiet_deadline.min(final_deadline)) => {
+                if final_deadline <= quiet_deadline {
+                    tracing::warn!("closing the session, though the server is still sending");
+                } else if !complete {
+                    tracing::debug!("the server went silent before the transcript was complete");
+                }
+                break;
+            }
         }
     }
     let _ = sink.send(Message::Close(None)).await;
     Ok(())
+}
+
+/// Reports the transcripts in `message` to `on_event`, and returns whether it says that the
+/// transcript is complete: the server has acknowledged `activityEnd`, or completed the turn.
+fn report(message: ServerMessage, on_event: &mut impl FnMut(Event)) -> bool {
+    if let Some(go_away) = message.go_away {
+        tracing::debug!("the server will disconnect in {:?}", go_away.time_left);
+    }
+    let mut complete = message
+        .voice_activity
+        .is_some_and(|activity| activity["type"] == "ACTIVITY_END");
+    if let Some(content) = message.server_content {
+        if let Some(transcription) = content.input_transcription {
+            tracing::debug!("transcript: {:?}", transcription.text);
+            on_event(Event::Transcript(transcription.text));
+        }
+        if let Some(transcription) = content.interim_input_transcription {
+            on_event(Event::Interim(transcription.text));
+        }
+        complete |= content.turn_complete;
+    }
+    complete
 }
 
 fn describe_connect_error(err: tungstenite::Error) -> anyhow::Error {
@@ -293,6 +334,9 @@ enum RealtimeInput {
 struct ServerMessage {
     setup_complete: Option<IgnoredAny>,
     server_content: Option<ServerContent>,
+    /// Not documented, hence not parsed any further: `{"type": "ACTIVITY_END", ...}` acknowledges
+    /// `activityEnd`.
+    voice_activity: Option<serde_json::Value>,
     go_away: Option<GoAway>,
 }
 
@@ -408,5 +452,38 @@ mod tests {
         let message: ServerMessage =
             serde_json::from_str(r#"{"serverContent": {"turnComplete": true}}"#).unwrap();
         assert!(message.server_content.unwrap().turn_complete);
+    }
+
+    #[test]
+    fn reports_transcripts_and_their_completion() {
+        let mut events = Vec::new();
+        let mut on_event = |event: Event| match event {
+            Event::Transcript(text) => events.push(format!("final {text}")),
+            Event::Interim(text) => events.push(format!("interim {text}")),
+        };
+        let mut completes = |json: &str| {
+            let message: ServerMessage = serde_json::from_str(json).unwrap();
+            report(message, &mut on_event)
+        };
+        // What the server sends for a recording, in this order.
+        let started = r#"{"serverContent": {}, "voiceActivity": {"type": "ACTIVITY_START"}}"#;
+        let interim = r#"{"serverContent": {"interimInputTranscription": {"text": "你"}}}"#;
+        let piece = r#"{"serverContent": {"inputTranscription": {"text": "你好"}}}"#;
+        let generated = r#"{"serverContent": {"generationComplete": true}}"#;
+        let ended = r#"{"serverContent": {}, "voiceActivity": {"type": "ACTIVITY_END"}}"#;
+        assert!(!completes(started));
+        assert!(!completes(interim));
+        assert!(!completes(piece));
+        assert!(!completes(generated));
+        assert!(completes(ended));
+
+        let go_away = r#"{"goAway": {"timeLeft": "5s"}}"#;
+        let unknown = r#"{"voiceActivity": "ACTIVITY_END"}"#;
+        let last =
+            r#"{"serverContent": {"inputTranscription": {"text": "嗎"}, "turnComplete": true}}"#;
+        assert!(!completes(go_away));
+        assert!(!completes(unknown));
+        assert!(completes(last));
+        assert_eq!(events, ["interim 你", "final 你好", "final 嗎"]);
     }
 }
