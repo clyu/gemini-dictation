@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -158,7 +159,8 @@ pub fn listen(key: Option<KeyCode>, events: UnboundedSender<KeyboardEvent>) -> R
     check_access()?;
     let listening: Arc<Mutex<HashSet<PathBuf>>> = Arc::default();
     let mut modified = input_dir_modified();
-    let mut scan = Scan::run(key, &events, &listening);
+    let nodes = event_nodes().unwrap_or_default();
+    let mut scan = Scan::run(nodes, key, &events, &listening);
     if !scan.found_key {
         match key {
             Some(key) => tracing::warn!("no input device has {key:?} yet"),
@@ -170,13 +172,17 @@ pub fn listen(key: Option<KeyCode>, events: UnboundedSender<KeyboardEvent>) -> R
         .spawn(move || {
             while !events.is_closed() {
                 thread::sleep(RESCAN_INTERVAL);
-                // Devices are only opened again when some were added, as opening them can wake
-                // them up, but new devices may take a moment to get their permissions.
+                // All devices are only opened again when some were added, as opening them can
+                // wake them up. Otherwise only those that could not be opened for lack of
+                // permission are tried again, as new devices may take a moment to get theirs.
                 let now = input_dir_modified();
-                if now != modified || scan.denied {
+                let nodes = if now != modified {
                     modified = now;
-                    scan = Scan::run(key, &events, &listening);
-                }
+                    event_nodes().unwrap_or_default()
+                } else {
+                    mem::take(&mut scan.denied)
+                };
+                scan = Scan::run(nodes, key, &events, &listening);
             }
         })
         .context("cannot start the input device scanner")?;
@@ -243,19 +249,20 @@ fn wanted(device: &Device, key: Option<KeyCode>) -> bool {
 struct Scan {
     /// Whether a device that has the key is listened to now.
     found_key: bool,
-    /// Whether some devices could not be opened for lack of permission.
-    denied: bool,
+    /// The devices that could not be opened for lack of permission.
+    denied: Vec<PathBuf>,
 }
 
 impl Scan {
-    /// Starts listening to the wanted devices that are not listened to yet.
+    /// Starts listening to the wanted devices among `nodes` that are not listened to yet.
     fn run(
+        nodes: Vec<PathBuf>,
         key: Option<KeyCode>,
         events: &UnboundedSender<KeyboardEvent>,
         listening: &Arc<Mutex<HashSet<PathBuf>>>,
     ) -> Self {
         let mut scan = Self::default();
-        for path in event_nodes().unwrap_or_default() {
+        for path in nodes {
             if listening.lock().unwrap().contains(&path) {
                 continue;
             }
@@ -268,8 +275,10 @@ impl Scan {
                         scan.found_key |= with_key;
                     }
                 }
-                Ok(_) => {}
-                Err(err) => scan.denied |= err.kind() == io::ErrorKind::PermissionDenied,
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    scan.denied.push(path);
+                }
+                _ => {}
             }
         }
         scan
