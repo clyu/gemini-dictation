@@ -21,7 +21,7 @@ Push-to-talk dictation for Linux Wayland desktops. Hold a key, speak, and releas
 
 ## Installation
 
-Download the `gemini-dictation-<version>-<build>-x86_64-linux.tar.gz` archive of the latest build from the [Latest Build](../../releases) pre-release (or from the artifacts of a workflow run), and install the binary and the desktop entry from it:
+Download the `gemini-dictation-<version>-<build>-x86_64-linux.tar.gz` archive of the latest build from the [Latest Build](../../releases) pre-release, and install the binary and the desktop entry from it:
 
 ```
 install -Dm755 gemini-dictation ~/.local/bin/gemini-dictation
@@ -126,11 +126,4 @@ On compositors that do not start desktop entries from `~/.config/autostart/`, st
 
 ## Building
 
-GitHub Actions (`.github/workflows/ci.yml`) runs these jobs on every push:
-
-- `test`: `cargo test --locked`
-- `lint`: `cargo fmt --check` and `cargo clippy`
-- `build`: `cargo build --release --locked`, and uploads `gemini-dictation-<version>-<run number>-x86_64-linux.tar.gz` as a workflow artifact. The run number is also part of the version that `gemini-dictation --version` prints, such as `0.1.0+42 (1a2b3c4)`.
-- `publish-latest`: on the `master` branch, once `build` and `test` have passed, publishes the archive as the "Latest Build" pre-release under the tag `ci-<run number>`, unless a later run has published its own already, and deletes the Latest Build releases of earlier runs
-
-To build locally, install Rust 1.88 or later and the ALSA development files (`libasound2-dev` on Debian and Ubuntu, `alsa-lib-devel` on Fedora), then run `cargo build --release --locked`.
+Install Rust 1.88 or later and the ALSA development files (`libasound2-dev` on Debian and Ubuntu, `alsa-lib-devel` on Fedora), then run `cargo build --release --locked`.
