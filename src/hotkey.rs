@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use evdev::{Device, EventType, KeyCode};
+use evdev::{AttributeSetRef, Device, EventType, KeyCode};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 /// The name of the virtual keyboard that the paste output creates, which is not listened to.
@@ -50,18 +50,20 @@ pub fn parse_key(name: &str) -> Result<KeyCode> {
         .with_context(|| format!("unknown key {name:?}; `gemini-dictation keys` shows key names"))
 }
 
+/// The keys that turn typed text into shortcuts while they are held.
+const MODIFIERS: [KeyCode; 8] = [
+    KeyCode::KEY_LEFTCTRL,
+    KeyCode::KEY_RIGHTCTRL,
+    KeyCode::KEY_LEFTSHIFT,
+    KeyCode::KEY_RIGHTSHIFT,
+    KeyCode::KEY_LEFTALT,
+    KeyCode::KEY_RIGHTALT,
+    KeyCode::KEY_LEFTMETA,
+    KeyCode::KEY_RIGHTMETA,
+];
+
 fn is_modifier(code: KeyCode) -> bool {
-    matches!(
-        code,
-        KeyCode::KEY_LEFTCTRL
-            | KeyCode::KEY_RIGHTCTRL
-            | KeyCode::KEY_LEFTSHIFT
-            | KeyCode::KEY_RIGHTSHIFT
-            | KeyCode::KEY_LEFTALT
-            | KeyCode::KEY_RIGHTALT
-            | KeyCode::KEY_LEFTMETA
-            | KeyCode::KEY_RIGHTMETA
-    )
+    MODIFIERS.contains(&code)
 }
 
 /// Keyboard keys, as opposed to mouse, joystick and other buttons, which start at `BTN_0`.
@@ -141,14 +143,14 @@ impl Tracker {
     }
 }
 
-/// Forwards the key events of the devices that have `key` (any keys if `None`) to `events`,
-/// including devices that are plugged in later.
+/// Forwards the key events of the devices that have `key` (any keys if `None`) or modifier keys to
+/// `events`, including devices that are plugged in later.
 pub fn listen(key: Option<KeyCode>, events: UnboundedSender<KeyboardEvent>) -> Result<()> {
     check_access()?;
     let listening: Arc<Mutex<HashSet<PathBuf>>> = Arc::default();
     let mut modified = input_dir_modified();
     let mut scan = Scan::run(key, &events, &listening);
-    if scan.started == 0 {
+    if !scan.found_key {
         match key {
             Some(key) => tracing::warn!("no input device has {key:?} yet"),
             None => tracing::warn!("no input device has keys yet"),
@@ -205,21 +207,33 @@ fn check_access() -> Result<()> {
     Ok(())
 }
 
-fn wanted(device: &Device, key: Option<KeyCode>) -> bool {
-    if device.name() == Some(VIRTUAL_KEYBOARD_NAME) {
-        return false;
-    }
-    device.supported_keys().is_some_and(|keys| match key {
+/// Whether a device with `keys` has `key`, or any keys if `None`.
+fn has_key(keys: &AttributeSetRef<KeyCode>, key: Option<KeyCode>) -> bool {
+    match key {
         Some(key) => keys.contains(key),
         None => keys.iter().next().is_some(),
-    })
+    }
+}
+
+/// Whether a device with `keys` is worth listening to: one that has `key`, or modifier keys, as
+/// typing waits for the modifiers of every keyboard, even if `key` is elsewhere, such as on a
+/// mouse.
+fn has_wanted_keys(keys: &AttributeSetRef<KeyCode>, key: Option<KeyCode>) -> bool {
+    has_key(keys, key) || MODIFIERS.iter().any(|&modifier| keys.contains(modifier))
+}
+
+fn wanted(device: &Device, key: Option<KeyCode>) -> bool {
+    device.name() != Some(VIRTUAL_KEYBOARD_NAME)
+        && device
+            .supported_keys()
+            .is_some_and(|keys| has_wanted_keys(keys, key))
 }
 
 /// The outcome of looking for devices to listen to.
 #[derive(Default)]
 struct Scan {
-    /// The number of devices that are listened to now.
-    started: usize,
+    /// Whether a device that has the key is listened to now.
+    found_key: bool,
     /// Whether some devices could not be opened for lack of permission.
     denied: bool,
 }
@@ -238,8 +252,11 @@ impl Scan {
             }
             match Device::open(&path) {
                 Ok(device) if wanted(&device, key) => {
+                    let with_key = device
+                        .supported_keys()
+                        .is_some_and(|keys| has_key(keys, key));
                     if listen_to(device, path, events, listening) {
-                        scan.started += 1;
+                        scan.found_key |= with_key;
                     }
                 }
                 Ok(_) => {}
@@ -328,6 +345,7 @@ pub fn print_keyboards() -> Result<()> {
 mod tests {
     use super::PushToTalk::{Cancel, Press, Release};
     use super::*;
+    use evdev::AttributeSet;
 
     const PTT: KeyCode = KeyCode::KEY_F9;
 
@@ -398,6 +416,20 @@ mod tests {
         press(&mut tracker, KeyCode::KEY_RIGHTSHIFT);
         tracker.handle(KeyboardEvent::Unplugged);
         assert!(!tracker.keys_held());
+    }
+
+    #[test]
+    fn listens_to_keyboards_without_the_key() {
+        let keyboard = AttributeSet::from_iter([KeyCode::KEY_A, KeyCode::KEY_LEFTSHIFT]);
+        let mouse = AttributeSet::from_iter([KeyCode::BTN_LEFT, KeyCode::BTN_SIDE]);
+        let side = Some(KeyCode::BTN_SIDE);
+        assert!(has_key(&mouse, side));
+        assert!(!has_key(&keyboard, side));
+        assert!(has_wanted_keys(&mouse, side));
+        assert!(has_wanted_keys(&keyboard, side));
+        assert!(!has_wanted_keys(&mouse, Some(PTT)));
+        assert!(has_wanted_keys(&mouse, None));
+        assert!(!has_wanted_keys(&AttributeSet::<KeyCode>::new(), None));
     }
 
     #[test]
