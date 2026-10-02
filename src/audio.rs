@@ -88,12 +88,8 @@ fn find_device(host: &cpal::Host, mic: Option<&str>) -> Result<cpal::Device> {
     };
     host.input_devices()
         .context("cannot list microphones")?
-        .find(|device| device_name(device) == name)
+        .find(|device| device.to_string() == name)
         .with_context(|| format!("there is no microphone named {name:?}"))
-}
-
-pub fn device_name(device: &cpal::Device) -> String {
-    device.to_string()
 }
 
 fn open_stream(mic: Option<&str>, slot: Slot) -> Result<cpal::Stream> {
@@ -219,12 +215,10 @@ fn to_i16(sample: f32) -> i16 {
 
 pub fn print_devices() -> Result<()> {
     let host = cpal::default_host();
-    let default = host
-        .default_input_device()
-        .map(|device| device_name(&device));
+    let default = host.default_input_device().map(|mic| mic.to_string());
     println!("Microphones (for --mic):");
     for device in host.input_devices().context("cannot list microphones")? {
-        let name = device_name(&device);
+        let name = device.to_string();
         let marker = if Some(&name) == default.as_ref() {
             " (default)"
         } else {
