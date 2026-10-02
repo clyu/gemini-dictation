@@ -156,11 +156,11 @@ impl Tracker {
 /// Forwards the key events of the devices that have `key` (any keys if `None`) or modifier keys to
 /// `events`, including devices that are plugged in later.
 pub fn listen(key: Option<KeyCode>, events: UnboundedSender<KeyboardEvent>) -> Result<()> {
-    check_access()?;
     let listening: Arc<Mutex<HashSet<PathBuf>>> = Arc::default();
     let mut modified = input_dir_modified();
-    let nodes = event_nodes().unwrap_or_default();
-    let mut scan = Scan::run(nodes, key, &events, &listening);
+    let devices = Devices::open(event_nodes()?);
+    devices.check_access()?;
+    let mut scan = Scan::run(devices, key, &events, &listening);
     if !scan.found_key {
         match key {
             Some(key) => tracing::warn!("no input device has {key:?} yet"),
@@ -176,13 +176,14 @@ pub fn listen(key: Option<KeyCode>, events: UnboundedSender<KeyboardEvent>) -> R
                 // wake them up. Otherwise only those that could not be opened for lack of
                 // permission are tried again, as new devices may take a moment to get theirs.
                 let now = input_dir_modified();
-                let nodes = if now != modified {
+                let mut nodes = if now != modified {
                     modified = now;
                     event_nodes().unwrap_or_default()
                 } else {
                     mem::take(&mut scan.denied)
                 };
-                scan = Scan::run(nodes, key, &events, &listening);
+                nodes.retain(|path| !listening.lock().unwrap().contains(path));
+                scan = Scan::run(Devices::open(nodes), key, &events, &listening);
             }
         })
         .context("cannot start the input device scanner")?;
@@ -193,8 +194,9 @@ fn input_dir_modified() -> Option<SystemTime> {
     fs::metadata(INPUT_DIR).and_then(|dir| dir.modified()).ok()
 }
 
-fn event_nodes() -> io::Result<Vec<PathBuf>> {
-    let mut nodes: Vec<PathBuf> = fs::read_dir(INPUT_DIR)?
+fn event_nodes() -> Result<Vec<PathBuf>> {
+    let mut nodes: Vec<PathBuf> = fs::read_dir(INPUT_DIR)
+        .with_context(|| format!("cannot list {INPUT_DIR}"))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| is_event_node(path))
         .collect();
@@ -208,18 +210,39 @@ fn is_event_node(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with("event"))
 }
 
-fn check_access() -> Result<()> {
-    let nodes = event_nodes().with_context(|| format!("cannot list {INPUT_DIR}"))?;
-    let denied = nodes.iter().all(|node| {
-        fs::File::open(node).is_err_and(|err| err.kind() == io::ErrorKind::PermissionDenied)
-    });
-    if !nodes.is_empty() && denied {
-        bail!(
-            "no permission to read keyboards in {INPUT_DIR}; add yourself to the input group \
-             with `sudo usermod -aG input $USER` and log in again"
-        );
+/// Input devices that were opened, to listen to them or to list them.
+#[derive(Default)]
+struct Devices {
+    opened: Vec<(PathBuf, Device)>,
+    /// Those that could not be opened for lack of permission.
+    denied: Vec<PathBuf>,
+}
+
+impl Devices {
+    fn open(nodes: Vec<PathBuf>) -> Self {
+        let mut devices = Self::default();
+        for path in nodes {
+            match Device::open(&path) {
+                Ok(device) => devices.opened.push((path, device)),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                    devices.denied.push(path);
+                }
+                Err(_) => {}
+            }
+        }
+        devices
     }
-    Ok(())
+
+    /// Fails if no device could be opened, for lack of permission.
+    fn check_access(&self) -> Result<()> {
+        if self.opened.is_empty() && !self.denied.is_empty() {
+            bail!(
+                "no permission to read keyboards in {INPUT_DIR}; add yourself to the input group \
+                 with `sudo usermod -aG input $USER` and log in again"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Whether a device with `keys` has `key`, or any keys if `None`.
@@ -245,7 +268,6 @@ fn wanted(device: &Device, key: Option<KeyCode>) -> bool {
 }
 
 /// The outcome of looking for devices to listen to.
-#[derive(Default)]
 struct Scan {
     /// Whether a device that has the key is listened to now.
     found_key: bool,
@@ -254,34 +276,29 @@ struct Scan {
 }
 
 impl Scan {
-    /// Starts listening to the wanted devices among `nodes` that are not listened to yet.
+    /// Starts listening to the wanted ones among `devices`, none of which is listened to yet.
     fn run(
-        nodes: Vec<PathBuf>,
+        devices: Devices,
         key: Option<KeyCode>,
         events: &UnboundedSender<KeyboardEvent>,
         listening: &Arc<Mutex<HashSet<PathBuf>>>,
     ) -> Self {
-        let mut scan = Self::default();
-        for path in nodes {
-            if listening.lock().unwrap().contains(&path) {
+        let mut found_key = false;
+        for (path, device) in devices.opened {
+            if !wanted(&device, key) {
                 continue;
             }
-            match Device::open(&path) {
-                Ok(device) if wanted(&device, key) => {
-                    let with_key = device
-                        .supported_keys()
-                        .is_some_and(|keys| has_key(keys, key));
-                    if listen_to(device, path, events, listening) {
-                        scan.found_key |= with_key;
-                    }
-                }
-                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                    scan.denied.push(path);
-                }
-                _ => {}
+            let with_key = device
+                .supported_keys()
+                .is_some_and(|keys| has_key(keys, key));
+            if listen_to(device, path, events, listening) {
+                found_key |= with_key;
             }
         }
-        scan
+        Self {
+            found_key,
+            denied: devices.denied,
+        }
     }
 }
 
@@ -355,13 +372,11 @@ pub async fn print_keys() -> Result<()> {
 }
 
 pub fn print_keyboards() -> Result<()> {
-    check_access()?;
+    let devices = Devices::open(event_nodes()?);
+    devices.check_access()?;
     println!("Input devices with keys:");
-    for path in event_nodes()? {
-        let Ok(device) = Device::open(&path) else {
-            continue;
-        };
-        if wanted(&device, None) {
+    for (path, device) in &devices.opened {
+        if wanted(device, None) {
             let name = device.name().unwrap_or("unnamed device");
             println!("  {}: {name}", path.display());
         }
