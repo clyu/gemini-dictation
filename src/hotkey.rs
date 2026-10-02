@@ -296,22 +296,27 @@ fn listen_to(
     let name = device.name().unwrap_or("unnamed device").to_owned();
     let id = NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed);
     listening.lock().unwrap().insert(path.clone());
-    let events = events.clone();
-    let listening = listening.clone();
-    let spawned = thread::Builder::new().name("input".into()).spawn(move || {
-        let result = forward(id, device, &events);
-        listening.lock().unwrap().remove(&path);
-        let _ = events.send(KeyboardEvent::Unplugged(id));
-        if let Err(err) = result {
-            tracing::debug!("stopped listening to {}: {err}", path.display());
+    let task = {
+        let events = events.clone();
+        let listening = listening.clone();
+        let path = path.clone();
+        move || {
+            let result = forward(id, device, &events);
+            listening.lock().unwrap().remove(&path);
+            let _ = events.send(KeyboardEvent::Unplugged(id));
+            if let Err(err) = result {
+                tracing::debug!("stopped listening to {}: {err}", path.display());
+            }
         }
-    });
-    match spawned {
+    };
+    match thread::Builder::new().name("input".into()).spawn(task) {
         Ok(_) => {
             tracing::debug!("listening to {name}");
             true
         }
         Err(err) => {
+            // The device is not listened to after all, so the next scan may try again.
+            listening.lock().unwrap().remove(&path);
             tracing::warn!("cannot listen to {name}: {err}");
             false
         }
