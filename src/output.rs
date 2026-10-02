@@ -47,8 +47,10 @@ struct Transcript {
 /// Orders the pieces of the transcripts, joins their lines, and separates consecutive transcripts.
 pub struct Queue {
     transcripts: VecDeque<Transcript>,
-    /// Deliver only complete transcripts, rather than each piece as soon as possible.
+    /// Deliver only complete transcripts, rather than each piece as soon as possible, as each
+    /// delivery replaces the last one instead of following it.
     whole: bool,
+    /// The last character delivered, which the next transcript is separated from.
     last_char: Option<char>,
 }
 
@@ -89,6 +91,10 @@ impl Queue {
 
     /// Takes the text that can be delivered now.
     pub fn take_ready(&mut self) -> String {
+        if self.whole {
+            // This text does not follow the last delivery, so it is not separated from it either.
+            self.last_char = None;
+        }
         let mut ready = String::new();
         while let Some(transcript) = self.transcripts.front_mut() {
             if transcript.ended || !self.whole {
@@ -437,6 +443,17 @@ mod tests {
         let mut queue = Queue::new(true);
         assert_eq!(feed(&mut queue, [Begin(1), text(1, "a")]), "");
         assert_eq!(feed(&mut queue, [text(1, "b"), End(1)]), "ab");
+    }
+
+    #[test]
+    fn whole_transcripts_stand_alone() {
+        let mut queue = Queue::new(true);
+        assert_eq!(feed(&mut queue, [Begin(1), text(1, "Hi."), End(1)]), "Hi.");
+        assert_eq!(feed(&mut queue, [Begin(2), text(2, "OK"), End(2)]), "OK");
+        // Those delivered together are still separated from each other.
+        assert_eq!(feed(&mut queue, [Begin(3), text(3, "One."), Begin(4)]), "");
+        let updates = [End(3), text(4, "Two"), End(4)];
+        assert_eq!(feed(&mut queue, updates), "One. Two");
     }
 
     #[test]

@@ -121,7 +121,7 @@ On compositors that do not start desktop entries from `~/.config/autostart/`, st
 - Transcripts are logged on standard error. When started from the application menu, the log usually ends up in the systemd journal (`journalctl --user -f`).
 - Line breaks in transcripts, which smart transcription may add for paragraphs and lists, are replaced with spaces, so that dictation never presses Enter and, for example, sends a message or runs a command.
 - The `paste` output replaces the contents of both the clipboard and the primary selection. Shift+Insert pastes the clipboard in most applications, but the primary selection in terminals such as GNOME Terminal, in which Ctrl+V does not paste at all.
-- Consecutive transcripts are separated by a space too, as they are dictated without knowing the text around the cursor.
+- Consecutive transcripts are separated by a space too, as they are dictated without knowing the text around the cursor. The `clipboard` output does not do so, as each transcript replaces the one before.
 - In both cases the space is left out where none belongs: next to Chinese and Japanese, after an opening bracket or quotation mark, and before closing punctuation such as `,` or `)`.
 
 ## Building
