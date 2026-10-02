@@ -236,8 +236,11 @@ impl Emitter {
             tracing::warn!("{reason}; printing transcripts instead");
             return Self::Stdout;
         }
-        match Self::new(OutputMode::Paste, paste_keys) {
-            Ok(emitter) => emitter,
+        match virtual_keyboard() {
+            Ok(keyboard) => Self::Paste {
+                keys: paste_keys,
+                keyboard,
+            },
             Err(err) => {
                 tracing::warn!("{err:#}; only copying transcripts to the clipboard");
                 Self::Clipboard
