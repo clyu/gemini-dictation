@@ -102,8 +102,9 @@ jobs:
     needs: [build, test]
     runs-on: ubuntu-latest
 
-    # Every run deletes the Latest Build releases of earlier runs, and would miss one that is
-    # still being published by a run at the same time. Queue them instead.
+    # Every run looks at the Latest Build releases there are, before it publishes its own and
+    # deletes those of earlier runs, and would miss one that is still being published by a run at
+    # the same time. Queue them instead.
     concurrency:
       group: publish-latest
       cancel-in-progress: false
@@ -112,7 +113,36 @@ jobs:
       contents: write
 
     steps:
+      # Runs need not get here in order: an earlier one may have taken longer, or be run again.
+      # It must not publish a second Latest Build next to that of a later run, and a run that is
+      # run again has published its own already.
+      - name: Look at the Latest Build releases
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          runs="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,name,isPrerelease \
+            | jq -r '.[] | select(.name == "Latest Build" and .isPrerelease) | .tagName
+                | capture("^ci-(?<run>[0-9]+)$").run')"
+          publish=true
+          earlier=""
+          for run in $runs; do
+            if [ "$run" -lt "$GITHUB_RUN_NUMBER" ]; then
+              earlier="$earlier ci-$run"
+            else
+              publish=false
+            fi
+          done
+          if [ "$publish" = false ]; then
+            echo "::notice::The Latest Build of this or a later run is published already."
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "earlier=$earlier" >> "$GITHUB_OUTPUT"
+
       - name: Download the binary
+        if: steps.latest.outputs.publish == 'true'
         uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.artifact-name }}
@@ -123,6 +153,7 @@ jobs:
       # assets replaced, and a deleted release's tag name can never be used again. Without
       # --target the tag would go on the head of the default branch, which need not be this commit.
       - name: Publish the Latest Build pre-release
+        if: steps.latest.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ci-${{ github.run_number }}
@@ -132,19 +163,14 @@ jobs:
             --target "$GITHUB_SHA" --prerelease --title "Latest Build" \
             --notes "Built from $GITHUB_SHA by [run $GITHUB_RUN_NUMBER]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
 
-      # Only once the new release is up, so that there is always one to download. Deleting a
-      # release leaves its tag behind, hence --cleanup-tag. The releases of later runs are kept,
-      # as this run may be an earlier one that was run again, or that took longer.
+      # Only once the release of this or a later run is up, so that there is always one to
+      # download. Deleting a release leaves its tag behind, hence --cleanup-tag.
       - name: Delete the Latest Build releases of earlier runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EARLIER: ${{ steps.latest.outputs.earlier }}
         run: |
           set -euo pipefail
-          old_tags="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
-            --json tagName,name,isPrerelease \
-            | jq -r --argjson run "$GITHUB_RUN_NUMBER" \
-              '.[] | select(.name == "Latest Build" and .isPrerelease) | .tagName
-                | select((capture("^ci-(?<run>[0-9]+)$").run | tonumber) < $run)')"
-          for old in $old_tags; do
+          for old in $EARLIER; do
             gh release delete "$old" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
           done

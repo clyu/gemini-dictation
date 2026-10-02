@@ -131,6 +131,6 @@ GitHub Actions (`.github/workflows/ci.yml`) runs these jobs on every push:
 - `test`: `cargo test --locked`
 - `lint`: `cargo fmt --check` and `cargo clippy`
 - `build`: `cargo build --release --locked`, and uploads `gemini-dictation-<version>-<run number>-x86_64-linux.tar.gz` as a workflow artifact. The run number is also part of the version that `gemini-dictation --version` prints, such as `0.1.0+42 (1a2b3c4)`.
-- `publish-latest`: on the `master` branch, once `build` and `test` have passed, publishes the archive as the "Latest Build" pre-release under the tag `ci-<run number>`, and deletes the Latest Build releases of earlier runs
+- `publish-latest`: on the `master` branch, once `build` and `test` have passed, publishes the archive as the "Latest Build" pre-release under the tag `ci-<run number>`, unless a later run has published its own already, and deletes the Latest Build releases of earlier runs
 
 To build locally, install Rust 1.88 or later and the ALSA development files (`libasound2-dev` on Debian and Ubuntu, `alsa-lib-devel` on Fedora), then run `cargo build --release --locked`.
