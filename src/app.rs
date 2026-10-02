@@ -1,11 +1,10 @@
 //! Ties the push-to-talk key, the microphone, the transcription sessions and the output together.
 
-use std::env;
 use std::fs;
 use std::future;
 use std::io;
 use std::mem;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +20,7 @@ use crate::gemini::{self, SessionConfig};
 use crate::hotkey::{self, PushToTalk, Tracker};
 use crate::ipc;
 use crate::output::{self, Emitter, Update};
+use crate::xdg;
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let languages = args.language_codes();
@@ -112,7 +112,7 @@ fn api_key(given: Option<String>) -> Result<String> {
     if let Some(key) = given.filter(|key| !key.is_empty()) {
         return Ok(key);
     }
-    let path = config_path("api-key");
+    let path = xdg::config_path("api-key");
     let key = read_config(&path)?.trim().to_owned();
     if key.is_empty() {
         bail!(
@@ -126,7 +126,7 @@ fn api_key(given: Option<String>) -> Result<String> {
 /// Returns the phrases saved in the vocabulary file of the configuration directory, followed by
 /// those given on the command line.
 fn vocabulary(given: Vec<String>) -> Result<Vec<String>> {
-    let saved = read_config(&config_path("vocabulary"))?;
+    let saved = read_config(&xdg::config_path("vocabulary"))?;
     Ok(parse_vocabulary(&saved, given))
 }
 
@@ -154,16 +154,6 @@ fn read_config(path: &Path) -> Result<String> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(String::new()),
         Err(err) => Err(err).with_context(|| format!("cannot read {}", path.display())),
     }
-}
-
-/// Returns the path of a file in the configuration directory, ~/.config/gemini-dictation.
-fn config_path(name: &str) -> PathBuf {
-    let config = env::var_os("XDG_CONFIG_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_default();
-    config.join("gemini-dictation").join(name)
 }
 
 /// Waits until `deadline`, or forever if there is none.

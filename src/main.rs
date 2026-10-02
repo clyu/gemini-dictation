@@ -5,6 +5,7 @@ mod gemini;
 mod hotkey;
 mod ipc;
 mod output;
+mod xdg;
 
 use std::io::{self, IsTerminal};
 

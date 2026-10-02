@@ -1,7 +1,6 @@
 //! A Unix socket through which `gemini-dictation ctl` controls the running instance, so that
 //! compositor key bindings can be used instead of, or next to, the evdev push-to-talk key.
 
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -11,12 +10,10 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::cli::CtlAction;
+use crate::xdg;
 
 fn socket_path() -> PathBuf {
-    let dir = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir);
-    dir.join("gemini-dictation.sock")
+    xdg::runtime_path("gemini-dictation.sock")
 }
 
 /// Listens on the socket until dropped, which removes it.
