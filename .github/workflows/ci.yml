@@ -102,8 +102,8 @@ jobs:
     needs: [build, test]
     runs-on: ubuntu-latest
 
-    # Every run deletes the Latest Build releases other than its own, so two runs at once would
-    # delete each other's and leave none. Queue them instead.
+    # Every run deletes the Latest Build releases of earlier runs, and would miss one that is
+    # still being published by a run at the same time. Queue them instead.
     concurrency:
       group: publish-latest
       cancel-in-progress: false
@@ -133,17 +133,18 @@ jobs:
             --notes "Built from $GITHUB_SHA by [run $GITHUB_RUN_NUMBER]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
 
       # Only once the new release is up, so that there is always one to download. Deleting a
-      # release leaves its tag behind, hence --cleanup-tag.
+      # release leaves its tag behind, hence --cleanup-tag. The releases of later runs are kept,
+      # as this run may be an earlier one that was run again, or that took longer.
       - name: Delete the Latest Build releases of earlier runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ci-${{ github.run_number }}
         run: |
           set -euo pipefail
           old_tags="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
             --json tagName,name,isPrerelease \
-            | jq -r --arg tag "$TAG" \
-              '.[] | select(.name == "Latest Build" and .isPrerelease and .tagName != $tag) | .tagName')"
+            | jq -r --argjson run "$GITHUB_RUN_NUMBER" \
+              '.[] | select(.name == "Latest Build" and .isPrerelease) | .tagName
+                | select((capture("^ci-(?<run>[0-9]+)$").run | tonumber) < $run)')"
           for old in $old_tags; do
             gh release delete "$old" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
           done
